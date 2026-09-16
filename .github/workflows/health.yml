@@ -1,0 +1,35 @@
+name: Market collector health
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 */6 * * *'
+
+jobs:
+  health:
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    steps:
+      - name: Check API and last scan
+        env:
+          MARKET_API_URL: ${{ secrets.MARKET_API_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, sys, urllib.request
+          from datetime import datetime, timezone
+          url = os.environ['MARKET_API_URL'].rstrip('/') + '/health'
+          with urllib.request.urlopen(url, timeout=20) as r:
+              data = json.load(r)
+          print(json.dumps(data, indent=2))
+          last = data.get('last_scan')
+          if not last or not last.get('started_at'):
+              raise SystemExit('No completed scan has been recorded yet')
+          ts = last['started_at'].replace('Z', '+00:00')
+          age = (datetime.now(timezone.utc) - datetime.fromisoformat(ts)).total_seconds()/3600
+          if age > 3:
+              raise SystemExit(f'Collector stale: last scan {age:.1f} hours ago')
+          if last.get('status') == 'failed':
+              raise SystemExit('Last collector run failed')
+          PY

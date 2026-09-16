@@ -1,0 +1,41 @@
+name: Ingest one listing URL
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Exact public listing URL'
+        required: true
+        type: string
+      platform:
+        description: 'Optional platform override (PlayerAuctions, ZeusX, EpicNPC...)'
+        required: false
+        type: string
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: collector
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+      - name: Ingest exact URL
+        env:
+          MARKET_API_URL: ${{ secrets.MARKET_API_URL }}
+          MARKET_API_TOKEN: ${{ secrets.MARKET_API_TOKEN }}
+          LISTING_URL: ${{ inputs.url }}
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          if [ -n "$PLATFORM" ]; then
+            python -m genshin_collector.manual_ingest "$LISTING_URL" --platform "$PLATFORM"
+          else
+            python -m genshin_collector.manual_ingest "$LISTING_URL"
+          fi
