@@ -1,0 +1,8 @@
+[project]
+name = "genshin-market-collector"
+version = "0.1.0"
+description = "Public marketplace collector and anomaly detector for Genshin account listings"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
