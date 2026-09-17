@@ -44,7 +44,50 @@ class MarketApi:
             changed += res.get("changed", 0)
         return {"ok": True, "received": total, "changed": changed}
 
-    async def finish_scan(self, scan_id: str, status: str, source_count: int, listing_count: int, candidate_count: int, error_count: int, notes: str | None = None):
+    async def send_system_event(
+        self,
+        component: str,
+        severity: str,
+        code: str,
+        message: str,
+        details_json: dict | None = None,
+    ):
+        return await self._post("/v1/system-event", {
+            "component": component,
+            "severity": severity,
+            "code": code,
+            "message": message,
+            "details_json": details_json or {},
+        })
+
+    async def annotate_historical(
+        self,
+        listing_url: str,
+        status: str,
+        confidence: float = 0.8,
+        evidence: str = "manual_annotation",
+        notes: str | None = None,
+        reviewer: str = "manual",
+    ):
+        return await self._post("/v1/historical/annotate", {
+            "listing_url": listing_url,
+            "status": status,
+            "confidence": confidence,
+            "evidence": evidence,
+            "notes": notes,
+            "reviewer": reviewer,
+        })
+
+    async def finish_scan(
+        self,
+        scan_id: str,
+        status: str,
+        source_count: int,
+        listing_count: int,
+        candidate_count: int,
+        error_count: int,
+        notes: str | None = None,
+    ):
         return await self._post("/v1/scan/finish", {
             "id": scan_id,
             "status": status,

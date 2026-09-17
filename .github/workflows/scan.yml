@@ -3,8 +3,8 @@ name: Genshin market scan
 on:
   workflow_dispatch:
   schedule:
-    # Deliberately away from minute 0 because GitHub documents higher schedule load at the start of the hour.
-    - cron: '17,47 * * * *'
+    # Once per hour. We spend the saved budget on broader pagination and deeper verification.
+    - cron: '17 * * * *'
 
 concurrency:
   group: genshin-market-scan
@@ -13,7 +13,7 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: collector

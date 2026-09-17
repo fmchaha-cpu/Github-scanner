@@ -18,13 +18,21 @@ npx wrangler d1 create genshin-market
 Write-Host "`nWICHTIG: Kopiere die ausgegebene database_id in cloudflare/wrangler.toml anstelle von REPLACE_WITH_D1_DATABASE_ID." -ForegroundColor Magenta
 Read-Host "Druecke Enter, nachdem du wrangler.toml gespeichert hast"
 
-Write-Host "`n3) Schema einspielen..." -ForegroundColor Yellow
+Write-Host "`n3) Basis-Schema einspielen..." -ForegroundColor Yellow
 npx wrangler d1 execute genshin-market --remote --file=./schema.sql
 
+Write-Host "`n3b) Quality/Feedback-Erweiterung einspielen..." -ForegroundColor Yellow
+npx wrangler d1 execute genshin-market --remote --file=./migrations/0002_quality_feedback.sql
+
+Write-Host "`n3c) Historical/Comparable-Erweiterung v0.5 einspielen..." -ForegroundColor Yellow
+npx wrangler d1 execute genshin-market --remote --file=./migrations/0003_historical_comparables.sql
+
 $bytes = New-Object byte[] 32
-[Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-$token = [Convert]::ToHexString($bytes).ToLower()
-$token | Set-Content -NoNewline "$PSScriptRoot\..\.generated_ingest_token.txt"
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($bytes)
+$rng.Dispose()
+$token = ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+[System.IO.File]::WriteAllText("$PSScriptRoot\..\.generated_ingest_token.txt", $token)
 
 Write-Host "`n4) Schreib-Token als Worker Secret setzen..." -ForegroundColor Yellow
 $token | npx wrangler secret put INGEST_TOKEN

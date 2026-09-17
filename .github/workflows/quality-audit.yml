@@ -1,0 +1,38 @@
+name: Daily market quality audit
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '37 18 * * *'
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch quality report
+        env:
+          MARKET_API_URL: ${{ secrets.MARKET_API_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+          url = os.environ['MARKET_API_URL'].rstrip('/') + '/v1/quality/recent?hours=24'
+          with urllib.request.urlopen(url, timeout=30) as r:
+              data = json.load(r)
+          print(json.dumps(data, indent=2))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
+              f.write('# Genshin market quality audit\n\n')
+              c = data.get('completeness') or {}
+              f.write(f"Listings: **{c.get('n', 0)}**  \n")
+              f.write(f"Price: **{c.get('price_pct', 0)}%** | Server: **{c.get('server_pct', 0)}%** | Seller: **{c.get('seller_pct', 0)}%**  \n")
+              h = data.get('historical_pool') or {}
+              f.write(f"Historical pool: **{h.get('n', 0)}** | Sold-confirmed anchors: **{h.get('sold_confirmed', 0)}**\n\n")
+              f.write('## Suggestions\n')
+              suggestions = data.get('suggestions') or []
+              if not suggestions:
+                  f.write('- No current quality warning signals.\n')
+              for s in suggestions:
+                  f.write(f"- **{s.get('priority','info')} / {s.get('code','')}** — {s.get('message','')}\n")
+          PY

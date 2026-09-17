@@ -1,42 +1,91 @@
-# Public, unauthenticated marketplace pages only. Do not bypass login, CAPTCHAs, rate limits, or anti-bot controls.
-# Add/disable scan URLs as site structures evolve. Coverage rows make failures visible instead of silently pretending a source was scanned.
+# Public, unauthenticated marketplace pages only.
+# Do not bypass login, CAPTCHAs, rate limits, robots restrictions, or anti-bot controls.
+# Coverage records explicitly distinguish searched/no-hit, skipped rotation, and errors.
+
+preferences:
+  # Explicit current tracker preferences only. Edit this list when priorities change.
+  favorite_characters:
+    - Venti
+    - Arlecchino
+
+collector:
+  deep_verify_limit_per_source: 6
 
 sources:
   - name: PlayerAuctions
     enabled: true
     use_browser_fallback: true
+    deep_verify_limit: 8
     detail_patterns:
-      - '/genshin-impact-account/\\d+a'
+      - '/genshin-impact-account/\d+a'
     scans:
+      # Always-on high-recall anchors.
       - family: eu_all
         label: EU account index
+        max_pages: 2
         url: https://www.playerauctions.com/genshin-impact-account/eu/
       - family: c6_generic
         label: C6 category
+        max_pages: 2
         url: https://www.playerauctions.com/genshin-impact-account/c6/
-      - family: favorite_or_relevant_character
-        label: Furina category
-        url: https://www.playerauctions.com/genshin-impact-account/furina/
-      - family: favorite_or_relevant_character
+      - family: resource_rich
+        label: Reroll / resource category
+        url: https://www.playerauctions.com/genshin-impact-account/reroll/
+
+      # Core favorite / high-value characters every run.
+      - family: favorite_character
         label: Venti category
         url: https://www.playerauctions.com/genshin-impact-account/venti/
-      - family: favorite_or_relevant_character
-        label: Columbina category
-        url: https://www.playerauctions.com/genshin-impact-account/columbina/
-      - family: favorite_or_relevant_character
+      - family: favorite_character
         label: Arlecchino category
         url: https://www.playerauctions.com/genshin-impact-account/arlecchino/
-      - family: favorite_or_relevant_character
+      - family: favorite_character
+        label: Columbina category
+        url: https://www.playerauctions.com/genshin-impact-account/columbina/
+      - family: high_value_character
+        label: Furina category
+        url: https://www.playerauctions.com/genshin-impact-account/furina/
+      - family: high_value_character
         label: Mavuika category
         url: https://www.playerauctions.com/genshin-impact-account/mavuika/
-      - family: resource_rich
-        label: Reroll category
-        url: https://www.playerauctions.com/genshin-impact-account/reroll/
+
+      # Rotating breadth: every hour covers one bucket, while core searches above always run.
+      - family: rotating_character
+        label: Neuvillette category
+        rotation: {mod: 4, slot: 0}
+        url: https://www.playerauctions.com/genshin-impact-account/neuvillette/
+      - family: rotating_character
+        label: Raiden category
+        rotation: {mod: 4, slot: 0}
+        url: https://www.playerauctions.com/genshin-impact-account/raiden/
+      - family: rotating_character
+        label: Kazuha category
+        rotation: {mod: 4, slot: 1}
+        url: https://www.playerauctions.com/genshin-impact-account/kazuha/
+      - family: rotating_character
+        label: Hu Tao category
+        rotation: {mod: 4, slot: 1}
+        url: https://www.playerauctions.com/genshin-impact-account/hu-tao/
+      - family: rotating_character
+        label: Xilonen category
+        rotation: {mod: 4, slot: 2}
+        url: https://www.playerauctions.com/genshin-impact-account/xilonen/
+      - family: rotating_character
+        label: Skirk category
+        rotation: {mod: 4, slot: 2}
+        url: https://www.playerauctions.com/genshin-impact-account/skirk/
+      - family: rotating_character
+        label: Zhongli category
+        rotation: {mod: 4, slot: 3}
+        url: https://www.playerauctions.com/genshin-impact-account/zhongli/
+      - family: rotating_character
+        label: Nahida category
+        rotation: {mod: 4, slot: 3}
+        url: https://www.playerauctions.com/genshin-impact-account/nahida/
 
   - name: ZeusX
     enabled: true
     use_browser_fallback: true
-    # Keep deliberately broad; inspect first run's coverage and tighten after observing current ZeusX detail URLs.
     detail_patterns:
       - '/item/'
       - '/listing/'
@@ -44,10 +93,9 @@ sources:
     scans:
       - family: all_accounts
         label: Genshin account marketplace
+        max_pages: 3
         url: https://zeusx.com/game/genshin-impact/13/accounts
 
-  # Start disabled until you confirm the current public account index URL and terms/robots behavior.
-  # The framework records disabled/unscanned sources separately in docs rather than pretending they are covered.
   - name: EpicNPC
     enabled: true
     use_browser_fallback: true
@@ -55,18 +103,30 @@ sources:
       - '/threads/'
     scans:
       - family: eu_forum
-        label: EU forum page 1
+        label: EU forum recent pages
         page_label: page-1
+        max_pages: 5
         url: https://www.epicnpc.com/forums/genshin-impact-eu-accounts.2156/
-      - family: eu_forum
-        label: EU forum page 2
-        page_label: page-2
-        url: https://www.epicnpc.com/forums/genshin-impact-eu-accounts.2156/page-2
-      - family: eu_forum
-        label: EU forum page 3
-        page_label: page-3
-        url: https://www.epicnpc.com/forums/genshin-impact-eu-accounts.2156/page-3
 
+  - name: PlayerUp
+    enabled: true
+    use_browser_fallback: true
+    detail_patterns:
+      - '/threads/'
+    scans:
+      - family: all_accounts
+        label: Genshin marketplace recent pages
+        page_label: page-1
+        max_pages: 3
+        url: https://www.playerup.com/accounts/genshinimpactaccount/
+      - family: price_low
+        label: Genshin marketplace price ascending
+        page_label: page-1-price-asc
+        max_pages: 2
+        url: https://www.playerup.com/accounts/genshinimpactaccount/?direction=asc&order=price
+
+  # Disabled until public index URLs are validated manually. The quality feed will keep these
+  # visibly "not covered" in documentation rather than pretending they were scanned.
   - name: Eldorado
     enabled: false
     use_browser_fallback: true
@@ -80,18 +140,3 @@ sources:
     detail_patterns:
       - '/offer/'
     scans: []
-
-  - name: PlayerUp
-    enabled: true
-    use_browser_fallback: true
-    detail_patterns:
-      - '/threads/'
-    scans:
-      - family: all_accounts
-        label: Genshin marketplace page 1
-        page_label: page-1
-        url: https://www.playerup.com/accounts/genshinimpactaccount/
-      - family: price_low
-        label: Genshin marketplace price ascending
-        page_label: page-1-price-asc
-        url: https://www.playerup.com/accounts/genshinimpactaccount/?direction=asc&order=price

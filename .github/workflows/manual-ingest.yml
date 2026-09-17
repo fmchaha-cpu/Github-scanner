@@ -11,6 +11,28 @@ on:
         description: 'Optional platform override (PlayerAuctions, ZeusX, EpicNPC...)'
         required: false
         type: string
+      historical_status:
+        description: 'Optional historical evidence label'
+        required: false
+        type: choice
+        default: ''
+        options:
+          - ''
+          - SOLD_CONFIRMED
+          - SOLD_CLAIMED
+          - EXPIRED_REMOVED
+          - OUTCOME_UNKNOWN
+          - RISK_CONTAMINATED
+      historical_confidence:
+        description: '0..1 confidence for manual historical label'
+        required: false
+        default: '0.8'
+        type: string
+      historical_evidence:
+        description: 'Short evidence note, e.g. exact sold page / archive screenshot'
+        required: false
+        default: 'manual_exact_url_review'
+        type: string
 
 jobs:
   ingest:
@@ -33,9 +55,14 @@ jobs:
           MARKET_API_TOKEN: ${{ secrets.MARKET_API_TOKEN }}
           LISTING_URL: ${{ inputs.url }}
           PLATFORM: ${{ inputs.platform }}
+          HIST_STATUS: ${{ inputs.historical_status }}
+          HIST_CONF: ${{ inputs.historical_confidence }}
+          HIST_EVIDENCE: ${{ inputs.historical_evidence }}
+        shell: bash
         run: |
-          if [ -n "$PLATFORM" ]; then
-            python -m genshin_collector.manual_ingest "$LISTING_URL" --platform "$PLATFORM"
-          else
-            python -m genshin_collector.manual_ingest "$LISTING_URL"
+          args=("$LISTING_URL")
+          if [ -n "$PLATFORM" ]; then args+=(--platform "$PLATFORM"); fi
+          if [ -n "$HIST_STATUS" ]; then
+            args+=(--historical-status "$HIST_STATUS" --historical-confidence "$HIST_CONF" --historical-evidence "$HIST_EVIDENCE")
           fi
+          python -m genshin_collector.manual_ingest "${args[@]}"

@@ -5,7 +5,7 @@
 - kostenloses Cloudflare-Konto
 - GitHub-Konto
 - Windows-PC fuer die erste Einrichtung
-- Git
+- Git / GitHub Desktop
 - Node.js LTS
 
 Python musst du lokal nicht zwingend installieren, wenn der Collector nur in GitHub Actions laufen soll.
@@ -14,25 +14,18 @@ Python musst du lokal nicht zwingend installieren, wenn der Collector nur in Git
 
 ## 1. Projekt in GitHub hochladen
 
-1. Auf GitHub ein neues Repository erstellen, z. B. `genshin-market-tracker`.
-2. Fuer kostenlose haeufige Actions am einfachsten **Public** waehlen. Es werden keine Passwoerter oder privaten Accountdaten ins Repository geschrieben.
-3. Dieses Projekt entpacken.
-4. In PowerShell im Projektordner:
+1. Auf GitHub ein neues Repository erstellen.
+2. Fuer kostenlose Actions am einfachsten **Public** waehlen.
+3. Projektdateien in das Repository kopieren.
+4. Commit + Push.
 
-```powershell
-git init
-git add .
-git commit -m "Initial Genshin market infrastructure"
-git branch -M main
-git remote add origin https://github.com/DEINNAME/genshin-market-tracker.git
-git push -u origin main
-```
+Es werden keine Passwoerter oder Markt-API-Tokens ins Repository geschrieben.
 
 ---
 
 ## 2. Cloudflare Worker + D1 einrichten
 
-Node.js LTS installieren, danach im Projektordner PowerShell starten:
+Im Projektordner PowerShell:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -45,8 +38,8 @@ Das Skript:
 2. oeffnet Cloudflare-Login,
 3. erstellt D1,
 4. laesst dich die `database_id` in `cloudflare/wrangler.toml` eintragen,
-5. spielt das Schema ein,
-6. erzeugt einen zufaelligen Schreib-Token,
+5. spielt Basis-Schema + Quality-Erweiterung ein,
+6. erzeugt einen kryptographisch zufaelligen Schreib-Token,
 7. speichert ihn als Cloudflare Secret,
 8. deployt den Worker.
 
@@ -56,7 +49,7 @@ Am Ende bekommst du etwa:
 https://genshin-market-api.<dein-subdomain>.workers.dev
 ```
 
-Teste im Browser:
+Teste:
 
 ```text
 https://...workers.dev/health
@@ -68,9 +61,7 @@ Es sollte JSON mit `"ok": true` erscheinen.
 
 ## 3. GitHub Actions Secrets setzen
 
-GitHub Repository -> **Settings -> Secrets and variables -> Actions -> New repository secret**.
-
-Zwei Secrets:
+Repository -> **Settings -> Secrets and variables -> Actions**.
 
 ### MARKET_API_URL
 
@@ -86,68 +77,119 @@ In der lokalen Datei:
 .generated_ingest_token.txt
 ```
 
-Den Inhalt kopieren. Die Datei niemals hochladen; `.gitignore` schuetzt sie bereits.
+Den Inhalt kopieren. Die Datei niemals committen.
 
 ---
 
 ## 4. Ersten Scan starten
 
-GitHub -> Repository -> **Actions -> Genshin market scan -> Run workflow**.
+GitHub -> **Actions -> Genshin market scan -> Run workflow**.
 
-Nach erfolgreichem Lauf oeffnen:
+Danach:
 
 ```text
 https://...workers.dev/health
-```
-
-und
-
-```text
 https://...workers.dev/v1/candidates/recent?hours=24
+https://...workers.dev/v1/quality/recent?hours=24
 ```
 
-Der zweite Link ist absichtlich nur ein **read-only Feed aus oeffentlichen Marktplatzdaten**. Er enthaelt keine Secrets. Diesen Link kann spaeter auch ChatGPT regelmaessig lesen.
+Der Collector laeuft automatisch **einmal pro Stunde** bei Minute 17.
 
 ---
 
-## 5. ChatGPT anbinden
+## 5. Was der Collector und was ChatGPT macht
 
-Wenn der Worker funktioniert, gib ChatGPT diese URL:
+Collector:
+
+- hohe Recall / breite Discovery
+- Deduplizierung ueber URL/Listing-ID
+- Kandidaten-Triage
+- Detail-Recheck der wichtigsten Kandidaten
+- Coverage + Quality-Metriken
+- Speicherung von Snapshots und Kandidatenhistorie
+
+ChatGPT / Human Review:
+
+- unabhaengige Tiefenpruefung
+- identity-bound Plausibilisierung
+- Security-/Seller-Kontext
+- Markt-/AVP-Auswertung
+- Entscheidung, ob ein Fund wirklich das strenge Kronjuwel-Niveau erreicht
+
+Der Collector allein loest keine Kaufentscheidung aus.
+
+---
+
+## 6. Quality Loop
+
+Wichtige Endpunkte:
 
 ```text
-https://...workers.dev
-```
-
-Dann kann die bestehende Markt-Automation zuerst den Collector-Feed pruefen und danach nur die interessanten Kandidaten auf ihren exakten Produktseiten tief verifizieren.
-
-Empfohlener Ablauf:
-
-```text
-GET /v1/candidates/recent?hours=2
+GET /v1/review-queue?limit=50
 GET /v1/coverage/recent?hours=24
+GET /v1/quality/recent?hours=24
+GET /v1/feedback/summary?days=30
 ```
 
-Danach weiterhin unabhaengige Websuche als zweite Quelle, damit ein kaputter Collector nicht unbemerkt zum Single Point of Failure wird.
+Details:
+
+[`QUALITY_LOOP.md`](QUALITY_LOOP.md)
+
+Mit Feedback koennen echte Fehler gesammelt werden:
+
+```powershell
+.\scripts\submit_feedback.ps1 `
+  -ListingUrl "https://..." `
+  -Label "false_positive" `
+  -Notes "Preis aus related listing gezogen" `
+  -ApiUrl "https://...workers.dev"
+```
+
+Jeder reale Fehler sollte spaeter moeglichst zu einem Regressionstest werden.
 
 ---
 
-## 6. Excel
+## 7. Excel
 
-Die D1-Datenbank wird die Rohdatenquelle. Deine bestehende Datei
+D1 ist die Rohdatenquelle. Die bestehende Datei
 
 `/Genshin Market Tracker/Genshin_Account_Market_Tracker(1).xlsx`
 
-bleibt der Analyse-/Ranking-Tracker und wird nur einmal taeglich gebuendelt aktualisiert. Dadurch sollte die Library-Bestaetigung nicht mehr stuendlich erscheinen.
+bleibt Analyse-/Ranking-Tracker und wird nur einmal taeglich gebuendelt aktualisiert.
 
 ---
 
-## 7. Was noch manuell kalibriert werden muss
+## 8. Bereits laufende v0.1 Installation upgraden
 
-Nach den ersten 2–3 Runs schauen wir gemeinsam in `/v1/coverage/recent` und die Actions-Logs. Dann koennen wir fuer jede Plattform sehen:
+Nicht erneut das komplette Setup starten.
 
-- Parser liefert echte Listings -> aktiv lassen.
-- Seite ist JavaScript-lastig -> Browser-Fallback optimieren.
-- URL/Pattern falsch -> Adapter korrigieren.
-- Zugriff blockiert -> nicht umgehen; Quelle auf partial setzen und ueber ChatGPT/Websuche abdecken.
+Nutze:
 
-Das ist kein Fehler des Designs, sondern absichtlich sichtbar gemachte Source-Health.
+[`V2_UPGRADE_DE.md`](V2_UPGRADE_DE.md)
+
+Kurzfassung nach Commit/Push:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\deploy_v2.ps1
+```
+
+Der bestehende API-Token bleibt erhalten.
+
+---
+
+## 9. Noch manuell zu kalibrieren
+
+Eldorado und G2G bleiben zunaechst deaktiviert, bis ihre oeffentlichen Listing-Strukturen sauber getestet sind.
+
+Nach mehreren v0.2 Runs beobachten wir besonders:
+
+- Seller-Extraction pro Plattform
+- Server-/Preis-Completeness
+- Detail-Verification-Rate
+- Zero-hit Query-Familien
+- Parserfehler
+- False Positives
+- echte Misses
+
+So wird die naechste Version aus gemessenen Schwachstellen gebaut, nicht aus Vermutungen.

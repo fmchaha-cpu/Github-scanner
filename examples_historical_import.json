@@ -1,0 +1,23 @@
+[
+  {
+    "source_key": "workbook:HIST-EXAMPLE-001",
+    "provenance": "existing_tracker_verified_history",
+    "platform": "PlayerAuctions",
+    "title": "Example historical EU C6 account",
+    "server": "EU",
+    "ar": 55,
+    "price_value": 75,
+    "currency": "USD",
+    "market_status": "SOLD_CONFIRMED",
+    "status_confidence": 0.9,
+    "status_evidence": "exact listing page showed sold/closed",
+    "observed_at": "2026-09-01T12:00:00Z",
+    "limited_c6_count": 1,
+    "c6r1_count": 0,
+    "limited_c6_characters": ["Furina"],
+    "character_tags": ["Furina", "Jean", "Mona"],
+    "archetypes": ["Value C6 / Collector"],
+    "risk_hits": 0,
+    "notes": "Example only - replace with evidence-backed historical data."
+  }
+]
