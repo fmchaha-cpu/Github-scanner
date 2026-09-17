@@ -1,6 +1,11 @@
-# Genshin Market Tracker v0.9.1
+# Genshin Market Tracker v0.9.2
 
 Hybrid-System fuer hohe Markt-Abdeckung, identity-bound Verifikation, historische Preisvergleiche und eine messbare Verbesserungsschleife.
+
+
+## v0.9.2 Hotfix
+
+v0.9.2 behebt den im ersten echten v0.9-Produktionslauf gemessenen Upload-Timeout: Der Collector kam durch Worker-Handshake, Installation und Tests, scheiterte aber beim Schreiben eines 40-Listing-Batches nach D1 mit `httpx.ReadTimeout`. Listings werden jetzt standardmaessig in 8er-Chunks uebertragen (hartes Maximum 20), und der API-Timeout wurde auf 60 Sekunden erhoeht. Blindes Wiederholen eines bereits zeitlich abgebrochenen Schreibvorgangs wird bewusst vermieden, damit Snapshot-Evidenz nicht doppelt geschrieben wird. Fuer v0.9.2 ist kein neuer Cloudflare-Deploy noetig; Worker v0.9 ist kompatibel.
 
 ## v0.9.1 Hotfix
 

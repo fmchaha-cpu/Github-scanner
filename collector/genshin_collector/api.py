@@ -6,7 +6,7 @@ from .models import ListingObservation, CoverageRow
 
 
 class MarketApi:
-    def __init__(self, base_url: str, token: str, timeout: float = 30.0):
+    def __init__(self, base_url: str, token: str, timeout: float = 60.0):
         self.base_url = base_url.rstrip("/")
         self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         self.timeout = timeout
@@ -54,7 +54,11 @@ class MarketApi:
             "rows": [r.model_dump() for r in rows],
         })
 
-    async def send_listings(self, scan_id: str, rows: list[ListingObservation], batch_size: int = 40):
+    async def send_listings(self, scan_id: str, rows: list[ListingObservation], batch_size: int = 8):
+        # D1 listing upserts are intentionally write-heavy. Small chunks keep each
+        # Cloudflare request comfortably below client/edge timeouts and avoid
+        # retrying an ambiguous partially-processed write after a ReadTimeout.
+        batch_size = max(1, min(int(batch_size), 20))
         total = 0
         changed = 0
         for i in range(0, len(rows), batch_size):
