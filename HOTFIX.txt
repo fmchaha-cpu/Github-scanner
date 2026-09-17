@@ -1,0 +1,2 @@
+v0.5.1 hotfix: restores pytest==8.4.2 in collector/requirements.txt.
+Copy the collector folder over the existing repository folder and replace the file.
