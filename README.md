@@ -1,6 +1,10 @@
-# Genshin Market Tracker v0.9.0
+# Genshin Market Tracker v0.9.1
 
 Hybrid-System fuer hohe Markt-Abdeckung, identity-bound Verifikation, historische Preisvergleiche und eine messbare Verbesserungsschleife.
+
+## v0.9.1 Hotfix
+
+v0.9.1 behebt den GitHub-Actions-Preflight aus v0.9.0: `/health` wird jetzt mit dem vorhandenen API-Token, browseraehnlichem User-Agent und kurzen Retries geprueft. Der fehlerhafte 403-Preflight konnte v0.9.0 stoppen, bevor Tests oder der eigentliche Marktscan starteten. Fuer diesen Hotfix ist allein kein neuer Cloudflare-Deploy notwendig.
 
 ## Was v0.9 verbessert
 
