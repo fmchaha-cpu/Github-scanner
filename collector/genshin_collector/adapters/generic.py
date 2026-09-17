@@ -5,7 +5,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup, Tag
@@ -81,6 +81,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
         deep_verify_hard_cap: int = 16,
         calibration_verify_sample: int = 2,
         control_verify_sample: int = 1,
+        merit_verify_sample: int = 4,
         circuit_breaker_enabled: bool = True,
         circuit_breaker_blocked_threshold: int = 1,
         circuit_breaker_zero_yield_threshold: int = 4,
@@ -95,6 +96,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
         self.deep_verify_hard_cap = max(self.deep_verify_limit, deep_verify_hard_cap)
         self.calibration_verify_sample = max(0, calibration_verify_sample)
         self.control_verify_sample = max(0, control_verify_sample)
+        self.merit_verify_sample = max(0, merit_verify_sample)
         self.circuit_breaker_enabled = bool(circuit_breaker_enabled)
         self.circuit_breaker_blocked_threshold = max(1, int(circuit_breaker_blocked_threshold))
         self.circuit_breaker_zero_yield_threshold = max(2, int(circuit_breaker_zero_yield_threshold))
@@ -106,6 +108,191 @@ class GenericMarketplaceAdapter(SourceAdapter):
 
     def _is_detail_url(self, url: str) -> bool:
         return any(p.search(url) for p in self.detail_patterns)
+
+    @staticmethod
+    def _generic_anchor_label(value: str) -> bool:
+        low = clean_text(value).lower()
+        return low in {
+            "buy now", "purchase now", "view", "view offer", "view details", "details",
+            "instant", "more", "open", "select", "image", "offer",
+        }
+
+    def _anchor_title(self, a: Tag) -> str:
+        """Return the richest title-like label available on one product anchor.
+
+        PlayerAuctions commonly links the same product from the title, image and BUY NOW button.
+        Treating the final button anchor as the title was the main v0.8 quality regression.
+        """
+        candidates = [clean_text(a.get_text(" ", strip=True))]
+        for attr in ("aria-label", "title"):
+            if a.get(attr):
+                candidates.append(clean_text(str(a.get(attr))))
+        img = a.find("img")
+        if img:
+            for attr in ("alt", "title", "aria-label"):
+                if img.get(attr):
+                    candidates.append(clean_text(str(img.get(attr))))
+        candidates = [c for c in candidates if c]
+        if not candidates:
+            return ""
+        return max(candidates, key=lambda c: (not self._generic_anchor_label(c), len(c)))
+
+    def _url_server_ar_hints(self, url: str) -> tuple[str | None, int | None]:
+        """Conservative product-slug hints, currently only for PlayerAuctions.
+
+        Examples observed in live URLs include ``eumalear-55``, ``eufemalear55``,
+        ``namalear-53`` and ``asia-male-ar60``.  We only accept hints on a numeric
+        PlayerAuctions product URL, never on generic navigation/category links.
+        """
+        if self.name.lower() != "playerauctions":
+            return None, None
+        path = unquote(urlparse(url).path).lower()
+        if not re.search(r"/genshin-impact-account/\d+a", path):
+            return None, None
+        tail = path.split("/genshin-impact-account/", 1)[1]
+        server: str | None = None
+        ar: int | None = None
+        patterns = [
+            ("EU", r"(?:eu|europe)(?:[-_ ]?(?:male|female|famale))?[-_ ]?ar[-_ ]?(\d{1,2})"),
+            ("NA", r"(?:na|america|american)(?:[-_ ]?(?:male|female|famale))?[-_ ]?ar[-_ ]?(\d{1,2})"),
+            ("ASIA", r"asia(?:[-_ ]?(?:male|female|famale))?[-_ ]?ar[-_ ]?(\d{1,2})"),
+            ("TW/HK/MO", r"(?:tw|hk|mo|taiwan|hong[-_ ]?kong)(?:[-_ ]?(?:male|female|famale))?[-_ ]?ar[-_ ]?(\d{1,2})"),
+        ]
+        for label, pat in patterns:
+            m = re.search(pat, tail, re.I)
+            if m:
+                server = label
+                value = int(m.group(1))
+                ar = value if 1 <= value <= 60 else None
+                return server, ar
+
+        # Separate server/rank fallbacks cover slugs like ``[eu]-...-ar55`` after URL encoding.
+        if re.search(r"(?:^|[^a-z])(eu|europe)(?:[^a-z]|$)", tail):
+            server = "EU"
+        elif re.search(r"(?:^|[^a-z])(na|america|american)(?:[^a-z]|$)", tail):
+            server = "NA"
+        elif re.search(r"(?:^|[^a-z])asia(?:[^a-z]|$)", tail):
+            server = "ASIA"
+        elif re.search(r"(?:^|[^a-z])(tw|hk|mo|taiwan|hong[-_ ]?kong)(?:[^a-z]|$)", tail):
+            server = "TW/HK/MO"
+        m_ar = re.search(r"(?:^|[^a-z])ar[-_ ]?(\d{1,2})(?:[^0-9]|$)", tail, re.I)
+        if m_ar:
+            value = int(m_ar.group(1))
+            ar = value if 1 <= value <= 60 else None
+        return server, ar
+
+    def _context_server_hint(self, base_url: str) -> str | None:
+        path = urlparse(base_url).path.lower()
+        if self.name.lower() == "playerauctions" and re.search(r"/genshin-impact-account/eu(?:/|$)", path):
+            return "EU"
+        if self.name.lower() == "epicnpc" and "eu-accounts" in path:
+            return "EU"
+        return None
+
+    @staticmethod
+    def _title_score(title: str, obs: ListingObservation | None = None) -> float:
+        text = clean_text(title)
+        if not text:
+            return -100.0
+        low = text.lower()
+        score = min(len(text), 500) / 50.0
+        if low in {"buy now", "view", "details", "instant", "offer", "image"}:
+            score -= 50
+        if parse_server(text):
+            score += 8
+        if parse_ar(text) is not None:
+            score += 5
+        if re.search(r"\bC[1-6]\b|C6R[1-5]", text, re.I):
+            score += 7
+        if obs is not None:
+            score += min(10, len(obs.character_tags or []))
+            score += min(6, (obs.limited_c6_count or 0) * 3)
+        return score
+
+    def _merge_card_observations(self, left: ListingObservation, right: ListingObservation) -> ListingObservation:
+        """Merge repeated anchors/discovery paths for the same exact product URL.
+
+        v0.8 correctly discovered hundreds of PlayerAuctions products, but the same product can be
+        linked by title/image/BUY NOW.  The old `found[href] = obs` let the last generic button
+        overwrite the rich title row.  v0.9 merges evidence instead and records conflicts.
+        """
+        out = left.model_copy(deep=True)
+        left_score = self._title_score(out.title, out)
+        right_score = self._title_score(right.title, right)
+        if right_score > left_score:
+            out.title = right.title
+            if right.field_sources.get("title"):
+                out.field_sources["title"] = right.field_sources["title"]
+
+        conflicts: list[str] = []
+        for field in ("price_value", "currency", "server", "ar", "seller", "availability", "external_id"):
+            lv = getattr(out, field)
+            rv = getattr(right, field)
+            if lv in (None, "") and rv not in (None, ""):
+                setattr(out, field, rv)
+                if right.field_sources.get(field.replace("price_value", "price")):
+                    key = field.replace("price_value", "price")
+                    out.field_sources[key] = right.field_sources[key]
+            elif rv not in (None, "") and lv not in (None, ""):
+                if field == "price_value":
+                    try:
+                        different = abs(float(lv) - float(rv)) > 0.01
+                    except Exception:
+                        different = lv != rv
+                else:
+                    different = str(lv).lower() != str(rv).lower()
+                if different:
+                    conflicts.append(field.replace("price_value", "price"))
+
+        # Resource fragments can be split across different anchors/containers. Keep the richest value.
+        for field in ("primogems", "intertwined", "limited_pulls"):
+            lv, rv = getattr(out, field), getattr(right, field)
+            if rv is not None and (lv is None or float(rv) > float(lv)):
+                setattr(out, field, rv)
+                if right.field_sources.get("resources"):
+                    out.field_sources["resources"] = right.field_sources["resources"]
+
+        out.instant_delivery = bool(out.instant_delivery or right.instant_delivery)
+        if not out.after_sale_protection and right.after_sale_protection:
+            out.after_sale_protection = right.after_sale_protection
+        out.discovery_paths = list(dict.fromkeys((out.discovery_paths or []) + (right.discovery_paths or [])))
+        out.quality_flags = list(dict.fromkeys((out.quality_flags or []) + (right.quality_flags or [])))
+        for field, source in (right.field_sources or {}).items():
+            out.field_sources.setdefault(field, source)
+
+        raw_parts = []
+        for part in (out.raw_text, right.raw_text, out.title, right.title):
+            part = clean_text(part or "")
+            if part and part not in raw_parts:
+                raw_parts.append(part)
+        combined = " | ".join(raw_parts)[:20000]
+        out.raw_text = combined
+        out.raw_hash = sha256_text(combined)
+
+        # Recompute feature evidence from the union of same-product fragments.
+        features = infer_features(combined, self.favorite_characters)
+        for k, v in features.items():
+            setattr(out, k, v)
+        primos, intertwined, pulls = parse_resources(combined)
+        if primos is not None and (out.primogems is None or primos > out.primogems):
+            out.primogems = primos
+        if intertwined is not None and (out.intertwined is None or intertwined > out.intertwined):
+            out.intertwined = intertwined
+        if pulls is not None and (out.limited_pulls is None or pulls > out.limited_pulls):
+            out.limited_pulls = pulls
+
+        out.data_confidence = max(float(out.data_confidence or 0), float(right.data_confidence or 0))
+        out.security_hint = security_hint(combined, out.after_sale_protection, bool(out.seller))
+        for field in conflicts:
+            flag = f"card_conflict:{field}"
+            if flag not in out.quality_flags:
+                out.quality_flags.append(flag)
+        if conflicts:
+            out.data_confidence = min(out.data_confidence or 70, 72)
+        out.parser_strategy = "anchor_merged_v09"
+        out = self._finalize_market_meta(enrich_and_score(out))
+        out.extraction_quality = self._extraction_quality(out)
+        return out
 
     @staticmethod
     def _safe_headers(headers) -> dict[str, str]:
@@ -121,8 +308,26 @@ class GenericMarketplaceAdapter(SourceAdapter):
 
     @staticmethod
     def _quick_block_signals(html: str) -> list[str]:
-        low = (html or "").lower()[:120000]
+        # Only inspect user-visible text/title for block signals. Many legitimate marketplace
+        # pages ship CAPTCHA/challenge library names inside scripts even when the page is usable.
+        # Treating raw script source as a block signal caused false positives and prematurely
+        # stopped dynamic hydration on ZeusX/PlayerUp in v0.7.
+        soup = BeautifulSoup(html or "", "html.parser")
+        title = clean_text(soup.title.get_text(" ", strip=True)) if soup.title else ""
+        for tag in soup.find_all(["script", "style", "noscript", "template"]):
+            tag.decompose()
+        visible = clean_text(soup.get_text(" ", strip=True))
+        low = f"{title} {visible[:30000]}".lower()
         return [name for name, terms in BLOCK_SIGNALS.items() if any(term in low for term in terms)]
+
+    def _quick_detail_link_count(self, base_url: str, html: str) -> int:
+        soup = BeautifulSoup(html or "", "html.parser")
+        seen: set[str] = set()
+        for a in soup.find_all("a", href=True):
+            href = urljoin(base_url, a.get("href", ""))
+            if self._is_detail_url(href):
+                seen.add(href)
+        return len(seen)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8), reraise=True)
     async def _http_fetch(self, url: str) -> tuple[str, int, int, str, dict[str, str]]:
@@ -181,14 +386,19 @@ class GenericMarketplaceAdapter(SourceAdapter):
             # ~15 seconds for a network-idle state that will never produce marketplace cards.
             await page.wait_for_timeout(550)
             html = await page.content()
-            if self._quick_block_signals(html):
+            initial_block_signals = self._quick_block_signals(html)
+            initial_detail_links = self._quick_detail_link_count(page.url or url, html)
+            # Return early only for a real zero-yield challenge page. If listing links are already
+            # present, keep waiting so seller/profile widgets and product controls can hydrate.
+            if initial_block_signals and initial_detail_links == 0:
                 early_blocked = True
             else:
                 try:
                     await page.wait_for_load_state("networkidle", timeout=8_000)
                 except Exception:
                     pass
-                await page.wait_for_timeout(450)
+                settle_ms = 950 if self.name.lower() in {"zeusx", "playerup"} else 650
+                await page.wait_for_timeout(settle_ms)
                 html = await page.content()
             final_url = page.url
             status = response.status if response is not None else None
@@ -201,7 +411,9 @@ class GenericMarketplaceAdapter(SourceAdapter):
         path = urlparse(href).path.lower()
         name = self.name.lower()
         if name == "playerauctions":
-            return "/genshin-impact-account/" in path and path.rstrip("/") != "/genshin-impact-account"
+            # Category/filter URLs such as /eu/, /c6/ and /furina/ are navigation, not parser drift.
+            # A real PA product URL contains a numeric offer id followed by ``a``.
+            return re.search(r"/genshin-impact-account/\d+a(?:$|[!%/_-])", path, re.I) is not None
         if name in {"epicnpc", "playerup"}:
             return "/threads/" in path
         if name == "zeusx":
@@ -215,8 +427,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
     ) -> FetchPage:
         soup = BeautifulSoup(html or "", "html.parser")
         text = clean_text(soup.get_text(" ", strip=True))
-        low = (html or "").lower() + " " + text.lower()[:12000]
-        blocked = [name for name, terms in BLOCK_SIGNALS.items() if any(term in low for term in terms)]
+        blocked = self._quick_block_signals(html or "")
         anchors = soup.find_all("a", href=True)
         detail_urls: list[str] = []
         unmatched_listing_like: list[str] = []
@@ -311,7 +522,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
         best: Tag = a
         best_score = -1.0
         target = urljoin(base_url, a.get("href", ""))
-        for _ in range(8):
+        for _ in range(12):
             if not isinstance(node, Tag):
                 break
             text = clean_text(node.get_text(" ", strip=True))
@@ -337,7 +548,10 @@ class GenericMarketplaceAdapter(SourceAdapter):
                 break
             if metadata >= 2 and other_details == 0:
                 best = node
-                break
+                # PlayerAuctions often puts seller/profile metadata one ancestor above the
+                # price + BUY NOW wrapper. Keep climbing until that profile evidence appears.
+                if self.name.lower() != "playerauctions" or profile_links > 0:
+                    break
             if not isinstance(node.parent, Tag):
                 break
             node = node.parent
@@ -365,6 +579,9 @@ class GenericMarketplaceAdapter(SourceAdapter):
         for a in node.find_all("a", href=True):
             href = urljoin(base_url, a.get("href", ""))
             label = clean_text(a.get_text(" ", strip=True))
+            if not label:
+                img = a.find("img")
+                label = clean_text((img.get("alt") if img else "") or a.get("aria-label") or a.get("title") or "")
             low = label.lower()
             if not label or href == detail_url or self._is_detail_url(href):
                 continue
@@ -373,6 +590,82 @@ class GenericMarketplaceAdapter(SourceAdapter):
             if self._looks_like_profile_href(href) and re.fullmatch(r"[A-Za-z0-9_. -]{2,50}", label):
                 candidates.append(label)
         return (candidates[0], "profile_link") if candidates else (None, None)
+
+    def _seller_from_detail_with_source(
+        self, soup: BeautifulSoup, detail_url: str, title: str
+    ) -> tuple[str | None, str | None]:
+        # Detail pages often render seller identity in a sidebar outside <main>. Search the whole
+        # document, but only accept labels attached to profile/store URLs to avoid nav contamination.
+        banned = {"seller", "seller profile", "view profile", "profile", "shop", "store", "buy now", "contact seller"}
+        for a in soup.find_all("a", href=True):
+            href = urljoin(detail_url, a.get("href", ""))
+            if not self._looks_like_profile_href(href):
+                continue
+            label = clean_text(a.get_text(" ", strip=True))
+            if not label:
+                img = a.find("img")
+                label = clean_text((img.get("alt") if img else "") or a.get("aria-label") or a.get("title") or "")
+            low = label.lower()
+            if not label or low in banned or low in title.lower() or len(label) > 50:
+                continue
+            if re.fullmatch(r"[A-Za-z0-9_. -]{2,50}", label):
+                return label, "detail_profile_link"
+        # Labeled detail text is a weaker fallback than a profile URL because marketplace
+        # boilerplate can contain generic phrases such as "seller verification".
+        body_text = clean_text((soup.body or soup).get_text(" ", strip=True))
+        labeled = parse_seller(body_text)
+        if labeled:
+            return labeled, "detail_text_label"
+        return None, None
+
+    def _availability_from_controls(self, soup: BeautifulSoup, detail_url: str | None = None) -> tuple[str | None, str | None]:
+        # Interactive controls are much stronger live evidence than generic marketing text.
+        # Ignore links that clearly point at a *different* marketplace listing so a related-items
+        # carousel cannot accidentally mark the current account sold/live. Prefer positive buy
+        # controls when both buy and sold labels exist elsewhere on the page.
+        sold_exact = {"sold", "sold out", "listing ended", "unavailable", "out of stock"}
+        buy_exact = {"buy now", "purchase now", "buy item", "buy account", "add to cart", "checkout"}
+        controls: list[tuple[str, Tag]] = []
+        # Native interactive controls are strongest. Some marketplaces (notably ZeusX) render
+        # purchase controls as role=button or styled div/span nodes, so accept those only when
+        # their visible label is an *exact* buy/sold phrase and their class/id also looks like a
+        # purchase-state control. This keeps unrelated marketing text from becoming live evidence.
+        native = list(soup.find_all(["button", "a", "input"]))
+        semantic = list(soup.select('[role="button"]'))
+        styled = []
+        for node in soup.find_all(["div", "span"]):
+            label = clean_text(node.get_text(" ", strip=True) or node.get("aria-label") or node.get("title") or "")
+            low = label.lower().strip()
+            attrs = " ".join([
+                str(node.get("id") or ""),
+                " ".join(str(x) for x in (node.get("class") or [])),
+                str(node.get("data-testid") or ""),
+            ]).lower()
+            if (low in buy_exact or low in sold_exact) and re.search(r"buy|purchase|cart|checkout|sold|availability|order", attrs):
+                styled.append(node)
+
+        seen_nodes: set[int] = set()
+        for node in [*native, *semantic, *styled]:
+            if id(node) in seen_nodes:
+                continue
+            seen_nodes.add(id(node))
+            if node.name == "input":
+                label = clean_text(str(node.get("value") or node.get("aria-label") or ""))
+            else:
+                label = clean_text(node.get_text(" ", strip=True) or node.get("aria-label") or node.get("title") or "")
+            low = label.lower().strip()
+            if low not in buy_exact and low not in sold_exact:
+                continue
+            if node.name == "a" and detail_url and node.get("href"):
+                href = urljoin(detail_url, str(node.get("href")))
+                if self._is_detail_url(href) and href.rstrip("/") != detail_url.rstrip("/"):
+                    continue
+            controls.append((low, node))
+        if any(low in buy_exact for low, _ in controls):
+            return "BUY NOW", "detail_control"
+        if any(low in sold_exact for low, _ in controls):
+            return "Sold/Closed", "detail_control"
+        return None, None
 
     def _seller_from_card(self, node: Tag, base_url: str, detail_url: str, title: str) -> str | None:
         seller, _source = self._seller_from_card_with_source(node, base_url, detail_url, title)
@@ -420,23 +713,27 @@ class GenericMarketplaceAdapter(SourceAdapter):
         obs.relisting_fingerprint = relisting_fingerprint(obs)
         return obs
 
-    def _parse_cards(self, base_url: str, html: str) -> list[ListingObservation]:
+    def _parse_cards(self, base_url: str, html: str, server_hint: str | None = None) -> list[ListingObservation]:
         soup = BeautifulSoup(html, "html.parser")
         found: dict[str, ListingObservation] = {}
+        context_server = server_hint or self._context_server_hint(base_url)
         for a in soup.find_all("a", href=True):
             href = urljoin(base_url, a["href"])
             if not self._is_detail_url(href):
                 continue
             text, node = self._card_for_anchor(a, base_url)
-            title = clean_text(a.get_text(" ", strip=True)) or text[:300]
+            title = self._anchor_title(a) or text[:300]
             if len(title) < 4 or self._skip_forum_non_sale(title):
                 continue
 
             price, currency = parse_price(text)
             title_server = parse_server(title)
-            server = title_server or parse_server(text)
+            url_server, url_ar = self._url_server_ar_hints(href)
+            text_server = parse_server(text)
+            server = title_server or text_server or url_server or context_server
             title_ar = parse_ar(title)
-            ar = title_ar or parse_ar(text)
+            text_ar = parse_ar(text)
+            ar = title_ar or text_ar or url_ar
             seller, seller_source = self._seller_from_card_with_source(node, base_url, href, title)
             primos, intertwined, pulls = parse_resources(text)
             features = infer_features(text, self.favorite_characters)
@@ -451,9 +748,21 @@ class GenericMarketplaceAdapter(SourceAdapter):
             if currency:
                 field_sources["currency"] = "card_text"
             if server:
-                field_sources["server"] = "card_title" if title_server else "card_text"
+                if title_server:
+                    field_sources["server"] = "card_title"
+                elif text_server:
+                    field_sources["server"] = "card_text"
+                elif url_server:
+                    field_sources["server"] = "url_slug"
+                else:
+                    field_sources["server"] = "query_context"
             if ar is not None:
-                field_sources["ar"] = "card_title" if title_ar is not None else "card_text"
+                if title_ar is not None:
+                    field_sources["ar"] = "card_title"
+                elif text_ar is not None:
+                    field_sources["ar"] = "card_text"
+                else:
+                    field_sources["ar"] = "url_slug"
             if seller:
                 field_sources["seller"] = seller_source or "card_text"
             if availability:
@@ -496,12 +805,16 @@ class GenericMarketplaceAdapter(SourceAdapter):
                 intertwined=intertwined,
                 limited_pulls=pulls,
                 verification_level="card",
-                parser_strategy="anchor_local_v07",
+                parser_strategy="anchor_local_v09",
                 field_sources=field_sources,
                 **features,
             )
             obs.extraction_quality = self._extraction_quality(obs)
-            found[href] = self._finalize_market_meta(enrich_and_score(obs))
+            obs = self._finalize_market_meta(enrich_and_score(obs))
+            if href in found:
+                found[href] = self._merge_card_observations(found[href], obs)
+            else:
+                found[href] = obs
         return list(found.values())
 
     @staticmethod
@@ -618,21 +931,13 @@ class GenericMarketplaceAdapter(SourceAdapter):
             seller = str(structured.get("seller"))
             seller_source = "jsonld"
         else:
-            labeled_seller = parse_seller(main_text)
-            if labeled_seller:
-                seller, seller_source = labeled_seller, "detail_text_label"
-            else:
-                seller, seller_source = self._seller_from_card_with_source(
-                    main_node, original.url, original.url, title
-                )
-                if seller_source == "profile_link":
-                    seller_source = "detail_profile_link"
+            seller, seller_source = self._seller_from_detail_with_source(soup, original.url, title)
 
         detail_server = parse_server(title)
         server_source: str | None = "detail_title" if detail_server else None
         if not detail_server:
             m_server = re.search(
-                r"(?:server|region)\s*[:\-]?\s*(EU|Europe|European|NA|America|American|Asia|TW|HK|MO|Taiwan|Hong Kong)\b",
+                r"(?:server(?:\s*/\s*region)?|region)\s*[:\-]?\s*(EU|Europe|European|NA|America|American|Asia|TW|HK|MO|Taiwan|Hong Kong)\b",
                 main_text,
                 re.I,
             )
@@ -649,8 +954,10 @@ class GenericMarketplaceAdapter(SourceAdapter):
             availability = str(structured.get("availability"))
             availability_source = "jsonld"
         else:
-            availability = parse_availability(main_text)
-            availability_source = "detail_text" if availability else None
+            availability, availability_source = self._availability_from_controls(soup, original.url)
+            if not availability:
+                availability = parse_availability(main_text)
+                availability_source = "detail_text" if availability else None
         protection = self._protection(main_text) or original.after_sale_protection
 
         mismatches: list[str] = []
@@ -760,7 +1067,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
                 if not merit_evidence:
                     original.quality_flags.append("detail_missing_merit_evidence")
 
-        original.parser_strategy = "detail_structured_v07" if structured else "detail_text_v07"
+        original.parser_strategy = "detail_structured_v09" if structured else "detail_text_v09"
         # enrich_and_score() also refreshes generic missing/not-detail flags.
         verified = self._finalize_market_meta(enrich_and_score(original))
         verified.extraction_quality = self._extraction_quality(verified)
@@ -772,11 +1079,38 @@ class GenericMarketplaceAdapter(SourceAdapter):
             key=lambda r: (r.collector_priority, -(r.price_value or 10**9)),
             reverse=True,
         )
-        # Verify every candidate we can afford, but never exceed the per-source hard cap.
+        # v0.9 makes deep_verify_limit meaningful: reserve part of the hard cap for discovery,
+        # calibration and control instead of letting a large candidate set consume every detail fetch.
+        candidate_budget = min(self.deep_verify_limit, self.deep_verify_hard_cap)
         selected: list[tuple[ListingObservation, str]] = [
-            (r, "candidate") for r in candidates[: self.deep_verify_hard_cap]
+            (r, "candidate") for r in candidates[:candidate_budget]
         ]
         selected_urls = {r.url for r, _ in selected}
+        remaining = max(0, self.deep_verify_hard_cap - len(selected))
+
+        # Merit probes rescue potentially valuable rows whose card is incomplete (especially PA rows
+        # before server/seller hydration).  Price is required so generic navigation never gets probed.
+        merit_pool = [
+            r for r in rows
+            if r.url not in selected_urls
+            and r.price_value is not None and r.price_value <= 200
+            and (
+                r.limited_c6_count > 0 or r.c6r1_count > 0 or r.multi_c6
+                or bool(r.favorite_character_names)
+                or (r.limited_pulls is not None and r.limited_pulls >= 250)
+                or r.history_hits > 0 or r.legacy_hits > 0 or r.old_alt_hits > 0
+                or len(r.character_tags or []) >= 4
+            )
+        ]
+        merit_pool.sort(key=lambda r: (
+            int(r.limited_c6_count > 0), int(bool(r.favorite_character_names)),
+            int(r.server == "EU"), int(not r.server), int(not r.seller),
+            r.collector_priority, -(r.price_value or 10**9),
+        ), reverse=True)
+        merit_n = min(self.merit_verify_sample, remaining)
+        for row in merit_pool[:merit_n]:
+            selected.append((row, "merit_probe"))
+            selected_urls.add(row.url)
         remaining = max(0, self.deep_verify_hard_cap - len(selected))
 
         # Gap calibration deliberately targets incomplete cards. This measures whether detail pages
@@ -793,16 +1127,16 @@ class GenericMarketplaceAdapter(SourceAdapter):
             selected_urls.add(row.url)
         remaining = max(0, self.deep_verify_hard_cap - len(selected))
 
-        # A small complete-card control sample is crucial for false-negative measurement: if a
-        # non-candidate detail page reveals C6/history/resources that the card missed, we learn it.
+        # A small complete-card control sample is crucial for false-negative measurement.
         control_pool = [
             r for r in rows
             if r.url not in selected_urls and r.price_value is not None and r.server and r.seller
         ]
-        control_pool.sort(key=lambda r: sha256_text(r.url))  # deterministic across identical inputs
+        control_pool.sort(key=lambda r: sha256_text(r.url))
         control_n = min(self.control_verify_sample, remaining)
         for row in control_pool[:control_n]:
             selected.append((row, "control"))
+            selected_urls.add(row.url)
 
         return selected
 
@@ -893,7 +1227,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
                     fetched: FetchPage | None = None
                     try:
                         fetched = await self._fetch(page_url, expect_listing_links=True)
-                        rows = self._parse_cards(page_url, fetched.html)
+                        rows = self._parse_cards(page_url, fetched.html, server_hint=spec.get("server_hint"))
                         stable_page_label = page_label if page_n == 1 else f"auto-page-{page_n}"
                         path_key = self._path_key(self.name, family, url, stable_page_label)
                         for row in rows:
@@ -902,9 +1236,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
                             previous = listings.get(row.url)
                             if previous:
                                 row.discovery_paths = list(dict.fromkeys(previous.discovery_paths + row.discovery_paths))
-                                if (previous.data_confidence or 0) > (row.data_confidence or 0):
-                                    previous.discovery_paths = row.discovery_paths
-                                    row = previous
+                                row = self._merge_card_observations(previous, row)
                             listings[row.url] = row
 
                         blocked_zero = bool(
@@ -945,7 +1277,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
                             detail_link_count=fetched.detail_link_count, parsed_count=len(rows), page_title=fetched.page_title,
                             content_hash=fetched.content_hash, blocked_signals=fetched.blocked_signals,
                             sample_detail_urls=fetched.sample_detail_urls, fallback_reason=fetched.fallback_reason,
-                            parser_strategy="anchor_local_v07", final_url=fetched.final_url,
+                            parser_strategy="anchor_merge_v09", final_url=fetched.final_url,
                             unmatched_listing_like_count=fetched.unmatched_listing_like_count,
                             sample_unmatched_listing_like_urls=fetched.sample_unmatched_listing_like_urls or [],
                             http_probe_http_status=fetched.http_probe_http_status,
@@ -995,7 +1327,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
                             error_row.blocked_signals = list(fetched.blocked_signals)
                             error_row.sample_detail_urls = list(fetched.sample_detail_urls)
                             error_row.fallback_reason = fetched.fallback_reason
-                            error_row.parser_strategy = "anchor_local_v07"
+                            error_row.parser_strategy = "anchor_merge_v09"
                             error_row.final_url = fetched.final_url
                             error_row.unmatched_listing_like_count = fetched.unmatched_listing_like_count
                             error_row.sample_unmatched_listing_like_urls = list(fetched.sample_unmatched_listing_like_urls or [])

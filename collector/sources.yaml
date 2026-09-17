@@ -13,6 +13,8 @@ collector:
   deep_verify_hard_cap_per_source: 16
   calibration_verify_sample_per_source: 2
   control_verify_sample_per_source: 1
+  merit_verify_sample_per_source: 4
+  auto_import_historical_seed: true
 
 sources:
   - name: PlayerAuctions
@@ -21,11 +23,13 @@ sources:
     circuit_breaker_enabled: true
     circuit_breaker_blocked_threshold: 1
     circuit_breaker_zero_yield_threshold: 4
-    deep_verify_limit: 10
-    deep_verify_hard_cap: 20
+    deep_verify_limit: 14
+    deep_verify_hard_cap: 24
     calibration_verify_sample: 3
+    merit_verify_sample: 6
+    control_verify_sample: 1
     detail_patterns:
-      - '/genshin-impact-account/\d+a'
+      - '/genshin-impact-account/\d+a(?:%21|!|[-/])?'
     scans:
       # Broad index catches cheap anomalies that character/category pages can miss.
       - family: all_accounts
@@ -37,6 +41,7 @@ sources:
       - family: eu_all
         label: EU account index
         max_pages: 2
+        server_hint: EU
         url: https://www.playerauctions.com/genshin-impact-account/eu/
       - family: c6_generic
         label: C6 category
@@ -103,8 +108,11 @@ sources:
     circuit_breaker_enabled: true
     circuit_breaker_blocked_threshold: 2
     circuit_breaker_zero_yield_threshold: 4
-    deep_verify_limit: 8
-    calibration_verify_sample: 2
+    deep_verify_limit: 10
+    deep_verify_hard_cap: 16
+    calibration_verify_sample: 4
+    control_verify_sample: 2
+    merit_verify_sample: 3
     detail_patterns:
       - '/item/'
       - '/listing/'
@@ -129,6 +137,7 @@ sources:
       - family: eu_forum
         label: EU forum recent pages
         page_label: page-1
+        server_hint: EU
         max_pages: 5
         url: https://www.epicnpc.com/forums/genshin-impact-eu-accounts.2156/
 
@@ -138,8 +147,11 @@ sources:
     circuit_breaker_enabled: true
     circuit_breaker_blocked_threshold: 2
     circuit_breaker_zero_yield_threshold: 4
-    deep_verify_limit: 10
-    calibration_verify_sample: 3
+    deep_verify_limit: 12
+    deep_verify_hard_cap: 18
+    calibration_verify_sample: 5
+    control_verify_sample: 2
+    merit_verify_sample: 4
     detail_patterns:
       - '/threads/'
     scans:

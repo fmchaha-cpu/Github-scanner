@@ -954,6 +954,46 @@ async function joinedListingByUrl(env: Env, listingUrl: string) {
   `).bind(listingUrl).first();
 }
 
+async function historicalStats(env: Env) {
+  await ensureV05Tables(env);
+  const tracked = await env.DB.prepare(`
+    SELECT market_status, COUNT(*) AS n FROM listing_market_meta
+    WHERE market_status IN ('SOLD_CONFIRMED','SOLD_CLAIMED','EXPIRED_REMOVED','OUTCOME_UNKNOWN','RISK_CONTAMINATED')
+    GROUP BY market_status
+  `).all();
+  const imported = await env.DB.prepare(`
+    SELECT market_status, COUNT(*) AS n FROM historical_offers GROUP BY market_status
+  `).all();
+  const importedCount = await env.DB.prepare(`SELECT COUNT(*) AS n FROM historical_offers`).first() as AnyRow | null;
+  const trackedCount = await env.DB.prepare(`
+    SELECT COUNT(*) AS n FROM listing_market_meta
+    WHERE market_status IN ('SOLD_CONFIRMED','SOLD_CLAIMED','EXPIRED_REMOVED','OUTCOME_UNKNOWN','RISK_CONTAMINATED')
+  `).first() as AnyRow | null;
+  const seed = await env.DB.prepare(`
+    SELECT COUNT(*) AS n, MAX(observed_at) AS latest FROM historical_offers
+    WHERE source_key LIKE 'tracker-v26:%' OR provenance LIKE 'tracker_historical_view%'
+  `).first() as AnyRow | null;
+  const currencies = await env.DB.prepare(`
+    SELECT currency, COUNT(*) AS n FROM historical_offers GROUP BY currency ORDER BY n DESC
+  `).all();
+  const byStatus: AnyRow = {};
+  for (const row of [...(tracked.results as AnyRow[]), ...(imported.results as AnyRow[])]) {
+    const key = String(row.market_status || 'UNKNOWN');
+    byStatus[key] = Number(byStatus[key] || 0) + Number(row.n || 0);
+  }
+  const trackedN = Number(trackedCount?.n || 0), importedN = Number(importedCount?.n || 0);
+  return {
+    total: trackedN + importedN,
+    tracked: trackedN,
+    imported: importedN,
+    tracker_seed_records: Number(seed?.n || 0),
+    tracker_seed_latest: seed?.latest ?? null,
+    by_status: byStatus,
+    imported_currencies: currencies.results,
+    caveat: 'Historical counts are evidence records, not guaranteed settled transactions.',
+  };
+}
+
 async function comparablesFor(env: Env, targetUrl: string, limit: number) {
   const target = await joinedListingByUrl(env, targetUrl) as AnyRow | null;
   if (!target) return { error: "listing_not_found", url: targetUrl };
@@ -1061,15 +1101,13 @@ export default {
     if (request.method === "GET" && path === "/health") {
       await ensureV05Tables(env);
       const db = await env.DB.prepare("SELECT COUNT(*) AS n FROM listings").first();
-      const hist = await env.DB.prepare(`
-        SELECT SUM(n) AS n FROM (
-          SELECT COUNT(*) AS n FROM listing_market_meta
-          WHERE market_status IN ('SOLD_CONFIRMED','SOLD_CLAIMED','EXPIRED_REMOVED','OUTCOME_UNKNOWN','RISK_CONTAMINATED')
-          UNION ALL SELECT COUNT(*) AS n FROM historical_offers
-        )
-      `).first();
+      const hist = await historicalStats(env);
       const last = await env.DB.prepare("SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT 1").first();
-      return json({ ok: true, version: "0.7", listing_count: db?.n ?? 0, historical_count: hist?.n ?? 0, last_scan: last ?? null, now: nowIso() });
+      return json({
+        ok: true, version: "0.9", listing_count: db?.n ?? 0, historical_count: hist.total,
+        historical_seed_records: hist.tracker_seed_records, last_scan: last ?? null, now: nowIso(),
+        capabilities: ["source_health", "field_provenance", "historical_stats", "comparables", "quality_by_version"],
+      });
     }
 
     if (request.method === "GET" && path === "/v1/candidates/recent") {
@@ -1255,6 +1293,10 @@ export default {
           identity_verified_pct: c.identity_verified_pct ?? null, strict_live_pct: c.strict_live_pct ?? null,
           avg_extraction_quality: c.avg_extraction_quality ?? null,
           historical_anchor_observations: Number(m.historical_anchor_observations || 0),
+          historical_pool_count: Number(m.historical_pool?.total || 0),
+          historical_sold_confirmed: Number(m.historical_pool?.sold_confirmed || 0),
+          candidate_comparable_coverage_pct: Number(m.candidate_comparable_coverage_pct || 0),
+          worker_version_compatible: Boolean(m.worker_api?.compatible),
           requests_avoided: Number(m.requests_avoided || 0),
           stale_quality_flag_count: Number(m.stale_quality_flag_count || 0),
           improvement_signals: m.improvement_signals || [], platform_quality: m.platform_quality || {},
@@ -1266,10 +1308,14 @@ export default {
       const versions = Array.from(latestByVersion.values());
       const newest = versions[0] || null, previous = versions[1] || null;
       const delta: AnyRow = {};
-      if (newest && previous) for (const k of ['listing_count','candidate_count','price_pct','server_pct','seller_pct','availability_pct','detail_verified_pct','identity_verified_pct','strict_live_pct','avg_extraction_quality','historical_anchor_observations','requests_avoided','stale_quality_flag_count']) {
+      if (newest && previous) for (const k of ['listing_count','candidate_count','price_pct','server_pct','seller_pct','availability_pct','detail_verified_pct','identity_verified_pct','strict_live_pct','avg_extraction_quality','historical_anchor_observations','historical_pool_count','historical_sold_confirmed','candidate_comparable_coverage_pct','requests_avoided','stale_quality_flag_count']) {
         const a=Number((newest as AnyRow)[k]),b=Number((previous as AnyRow)[k]); delta[k]=Number.isFinite(a)&&Number.isFinite(b)?Number((a-b).toFixed(2)):null;
       }
       return json({ source: 'exact_collector_scan_events', newest, previous, delta, versions, points: allPoints });
+    }
+
+    if (request.method === "GET" && path === "/v1/historical/stats") {
+      return json(await historicalStats(env));
     }
 
     if (request.method === "GET" && path === "/v1/historical/recent") {
@@ -1549,7 +1595,8 @@ export default {
         ).run();
         imported++;
       }
-      return json({ ok: errors.length === 0, imported, errors }, errors.length ? 207 : 201);
+      const stats = await historicalStats(env);
+      return json({ ok: errors.length === 0, imported, errors, historical_stats: stats }, errors.length ? 207 : 201);
     }
 
     return json({ error: "not_found" }, 404);

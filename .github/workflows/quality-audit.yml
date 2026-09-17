@@ -30,6 +30,7 @@ jobs:
           verification = get('/v1/verification/events?hours=24')
           source_health = get('/v1/source-health')
           by_version = get('/v1/quality/by-version?limit=40')
+          historical_stats = get('/v1/historical/stats')
 
           print('QUALITY')
           print(json.dumps(quality, indent=2))
@@ -43,6 +44,8 @@ jobs:
           print(json.dumps(source_health, indent=2))
           print('QUALITY BY VERSION')
           print(json.dumps(by_version, indent=2))
+          print('HISTORICAL STATS')
+          print(json.dumps(historical_stats, indent=2))
 
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
               f.write('# Genshin market quality audit\n\n')
@@ -83,8 +86,13 @@ jobs:
 
               h = quality.get('historical_pool') or {}
               f.write(
-                  f"\nHistorical pool: **{h.get('n', 0)}** | Sold-confirmed anchors: "
-                  f"**{h.get('sold_confirmed', 0)}** | Sold-claimed: **{h.get('sold_claimed', 0)}**\n\n"
+                  f"\nRolling historical pool: **{h.get('n', 0)}** | Sold-confirmed anchors: "
+                  f"**{h.get('sold_confirmed', 0)}** | Sold-claimed: **{h.get('sold_claimed', 0)}**\n"
+              )
+              f.write(
+                  f"Persistent repertoire: **{historical_stats.get('total', 0)}** | "
+                  f"Tracker seed: **{historical_stats.get('tracker_seed_records', 0)}** | "
+                  f"Imported: **{historical_stats.get('imported', 0)}**\n\n"
               )
 
               f.write('## Verification performance\n\n')
@@ -121,7 +129,8 @@ jobs:
               f.write(
                   f"Seller **{version_delta.get('seller_pct')} pp**, server **{version_delta.get('server_pct')} pp**, "
                   f"identity **{version_delta.get('identity_verified_pct')} pp**, "
-                  f"scan historical-anchor observations **{version_delta.get('historical_anchor_observations')}**, "
+                  f"historical pool **{version_delta.get('historical_pool_count')}**, "
+                  f"comparable coverage **{version_delta.get('candidate_comparable_coverage_pct')} pp**, "
                   f"avoided fetches **{version_delta.get('requests_avoided')}**\n\n"
               )
 

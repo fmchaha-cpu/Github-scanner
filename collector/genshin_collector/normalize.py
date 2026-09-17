@@ -8,7 +8,10 @@ PRICE_PATTERNS = [
     re.compile(r"(?P<sym>[$€£])\s*(?P<value>\d{1,6}(?:[.,]\d{1,2})?)"),
     re.compile(r"(?P<value>\d{1,6}(?:[.,]\d{1,2})?)\s*(?P<code>USD|EUR|GBP)\b", re.I),
 ]
-AR_RE = re.compile(r"\bAR\s*[-: ]?\s*(\d{1,2})\b", re.I)
+AR_RE = re.compile(r"\bAR\s*[-: /|]?\s*(\d{1,2})\b", re.I)
+# Marketplace titles frequently concatenate gender and AR (e.g. ``MaleAR55`` / ``FemaleAR 55``).
+# Keep this as a separate, narrow fallback so ordinary words containing ``ar`` are never interpreted as rank.
+AR_GENDER_RE = re.compile(r"(?:male|female|famale)\s*[/|_-]?\s*AR\s*[-: /|]?\s*(\d{1,2})\b", re.I)
 PRIMO_RE = re.compile(r"(?<!\d)(\d{3,7})\s*\+?\s*(?:primogem|primo(?:gems?)?)", re.I)
 PRIMO_K_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:[.,]\d{1,2})?)\s*[kK]\s*(?:primogem|primo(?:gems?)?)", re.I)
 IF_RE = re.compile(r"(?<!\d)(\d{1,4})\s*\+?\s*(?:intertwined|interwoven)\s*(?:fate|destiny)?", re.I)
@@ -119,7 +122,8 @@ def parse_server(text: str):
 
 
 def parse_ar(text: str):
-    m = AR_RE.search(text or "")
+    raw = text or ""
+    m = AR_RE.search(raw) or AR_GENDER_RE.search(raw)
     if not m:
         return None
     value = int(m.group(1))

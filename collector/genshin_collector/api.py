@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import httpx
+from urllib.parse import quote
 from .models import ListingObservation, CoverageRow
 
 
@@ -22,8 +23,21 @@ class MarketApi:
             r.raise_for_status()
             return r.json()
 
+    async def get_health(self):
+        return await self._get("/health")
+
     async def get_source_health(self):
         return await self._get("/v1/source-health")
+
+    async def get_historical_stats(self):
+        return await self._get("/v1/historical/stats")
+
+    async def import_historical(self, payload: dict):
+        return await self._post("/v1/historical/import", payload)
+
+    async def get_comparables(self, listing_url: str, limit: int = 30):
+        safe_limit = max(3, min(int(limit), 100))
+        return await self._get(f"/v1/comparables?url={quote(listing_url, safe='')}&limit={safe_limit}")
 
     async def start_scan(self, scan_id: str, version: str, notes: str | None = None):
         return await self._post("/v1/scan/start", {

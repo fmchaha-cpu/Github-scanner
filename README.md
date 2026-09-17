@@ -1,32 +1,23 @@
-# Genshin Market Tracker v0.7.0
+# Genshin Market Tracker v0.9.0
 
 Hybrid-System fuer hohe Markt-Abdeckung, identity-bound Verifikation, historische Preisvergleiche und eine messbare Verbesserungsschleife.
 
-## Was v0.7 verbessert
+## Was v0.9 verbessert
 
-v0.7 baut auf der v0.6-Diagnostik auf und macht blockierte Quellen billiger, die Extraktion nachvollziehbarer und die Weiterentwicklung messbarer.
+Der erste v0.8-Produktionsscan war ein Recall-Durchbruch: 294 statt 79 Listings, davon 215 von PlayerAuctions. Gleichzeitig zeigte die neue Diagnostik einen klaren Qualitaetsfehler: dieselbe PlayerAuctions-Listing-URL wird oft ueber Titel/Bild **und** einen spaeteren `BUY NOW`-Link verlinkt. Der spaetere generische Anchor konnte in v0.8 die reichere Beobachtung ueberschreiben.
 
-- **Circuit Breaker** stoppt eine Quelle innerhalb des Runs nach bestaetigtem Challenge/Zero-Yield statt viele identische Blockseiten zu laden.
-- **Persistente Source Health + Cooldown** verhindert wiederholte erfolglose Vollscans und sondiert spaeter automatisch erneut.
-- **Field Provenance** speichert, ob Werte aus Karte, Profil-Link, Detailtext, JSON-LD oder URL stammen.
-- **Calibration-Gap + Control Samples** pruefen neben Kandidaten auch gezielt unvollstaendige und scheinbar unauffaellige Listings.
-- **Known-case Benchmark Corpus** schuetzt bekannte wichtige Faelle vor Regressionen.
-- **Version-to-Version Quality** vergleicht exakte Collector-Scan-Metriken.
-- **Stale-Flag-Recompute** verhindert alte Kartenwarnungen nach erfolgreicher Detailpruefung.
-- **Historical Seed v26** bringt 17 preisbekannte, evidenzklassifizierte historische Tracker-Angebote in die Comparable Engine.
+v0.9 korrigiert genau diese gemessenen Schwachstellen:
 
-Die v0.6-Features (Browser-Fallback, Seller/Profile-Erkennung, Parserdiagnostik, Verification Events, per-platform Quality) bleiben enthalten.
+- **Evidence-preserving Card Merge:** gleiche exakte Produkt-URL wird aus mehreren Anchors zusammengefuehrt statt ueberschrieben.
+- **Rich-title preference:** Titel/Bild-Labels schlagen generische `BUY NOW`, `View` oder `Details` Anchors.
+- **PlayerAuctions Hydration:** Server/AR koennen konservativ aus Produkt-Slug und bekannter EU-Query abgeleitet werden; Kategorie-URLs zaehlen nicht mehr faelschlich als Parser-Drift.
+- **AR parser v0.9:** erkennt auch `MaleAR55`, `FemaleAR 55` und `FamaleAR-54`.
+- **ZeusX Detail Evidence:** `Server/Region` und semantische/stylisierte Kauf-Controls werden staerker erkannt, ohne generischen Text als Live-Beweis zu akzeptieren.
+- **Verification budget:** Kandidaten erhalten ein festes Budget; zusaetzlich werden guenstige, potenziell wertvolle unvollstaendige Listings als `merit_probe` tief geprueft.
+- **Historical Seed Self-Heal:** fehlt der evidence-backed Tracker-Seed in D1, importiert v0.9 ihn automatisch und verifiziert die persistente Anzahl.
+- **Comparables bleiben passiv:** historische Vergleiche dienen weiterhin als Mess-/Kalibrierungsdaten und veraendern Alerts noch nicht automatisch.
 
-## Bereits aus v0.5 enthalten
-
-- Historical Comparable Engine mit getrennten Evidenzklassen
-- `SOLD_CONFIRMED`, `SOLD_CLAIMED`, `EXPIRED_REMOVED`, `OUTCOME_UNKNOWN`, `RISK_CONTAMINATED`
-- konservative 3-Miss-Entfernungserkennung
-- gewichteter Median / robuste historische Vergleiche
-- Relisting-/Duplicate-Fingerprints
-- Historical Import + manuelle Annotation
-- Feedback Loop fuer False Positives / False Negatives / Parserfehler
-- parallele Account-Archetypen statt einer einzigen Kategorie
+Die v0.8-Funktionen (Worker/Collector Handshake, Historical Stats, passive Candidate Comparables) sowie v0.7 Source Health/Circuit Breaker/Field Provenance und die Historical Comparable Engine bleiben erhalten.
 
 ## Wichtige Read-only Endpunkte
 
@@ -36,7 +27,6 @@ Die v0.6-Features (Browser-Fallback, Seller/Profile-Erkennung, Parserdiagnostik,
 /v1/review-queue
 /v1/coverage/recent?hours=24
 /v1/coverage/diagnostics?hours=24
-/v1/coverage/diagnostics?hours=24&platform=PlayerAuctions
 /v1/verification/events?hours=24
 /v1/quality/recent?hours=24
 /v1/quality/trends?limit=20
@@ -44,6 +34,7 @@ Die v0.6-Features (Browser-Fallback, Seller/Profile-Erkennung, Parserdiagnostik,
 /v1/source-health
 /v1/quality/snapshots?limit=20
 /v1/historical/recent?limit=100
+/v1/historical/stats
 /v1/comparables?url=<URL-ENCODED-LISTING>&limit=30
 /v1/duplicates/recent?hours=168
 /v1/status/history?url=<URL-ENCODED-LISTING>
@@ -60,12 +51,25 @@ Die v0.6-Features (Browser-Fallback, Seller/Profile-Erkennung, Parserdiagnostik,
 
 ## Scan-Rhythmus
 
-Der normale GitHub-Scan laeuft einmal pro Stunde bei Minute 17. Das Runtime-Budget wird lieber fuer Browser-Fallback, Pagination und Deep Verification genutzt als fuer viele oberflaechliche Runs.
+Der normale GitHub-Scan laeuft einmal pro Stunde bei Minute 17. Blockierte Quellen werden innerhalb eines Runs frueh abgebrochen; funktionsfaehige Quellen erhalten das Verification-Budget.
 
 ## Upgrade
 
-Siehe [`docs/V07_UPGRADE_DE.md`](docs/V07_UPGRADE_DE.md).
+Siehe [`docs/V09_UPGRADE_DE.md`](docs/V09_UPGRADE_DE.md).
+
+Kurzfassung:
+
+1. ZIP-Inhalt ueber das bestehende Repository kopieren. `.git` **nicht** loeschen.
+2. Commit + Push.
+3. PowerShell im Repository:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\deploy_v09.ps1
+```
+
+4. Danach **Genshin market scan** starten. Der Historical-Seed wird bei Bedarf automatisch repariert.
 
 ## Grenzen
 
-Keine Garantie auf 100 % Marktabdeckung. Es werden keine Logins, CAPTCHAs, Rate Limits oder Anti-Bot-Schutzmechanismen umgangen. Wenn eine Quelle eine Challenge zeigt, versucht v0.7 nur normales oeffentliches Browser-Rendering und **misst/markiert** das Problem. Historische Asking Prices sind nicht automatisch Settlement Prices. Unsicherheit und Evidenzstaerke bleiben deshalb explizit.
+Keine Garantie auf 100 % Marktabdeckung. Es werden keine Logins, CAPTCHAs, Rate Limits oder Anti-Bot-Schutzmechanismen umgangen. Sichtbare Challenge-Seiten werden markiert und durch Circuit Breaker begrenzt. Historische Asking Prices sind nicht automatisch Settlement Prices. Unsicherheit und Evidenzstaerke bleiben explizit.

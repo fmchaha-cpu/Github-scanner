@@ -24,6 +24,28 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
           cache-dependency-path: collector/requirements.txt
+      - name: Verify Worker compatibility
+        env:
+          MARKET_API_URL: ${{ secrets.MARKET_API_URL }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request
+          url = os.environ['MARKET_API_URL'].rstrip('/') + '/health'
+          with urllib.request.urlopen(url, timeout=20) as r:
+              data = json.load(r)
+          print(json.dumps(data, indent=2))
+          version = str(data.get('version', 'unknown')).lstrip('v')
+          if not version.startswith('0.9'):
+              raise SystemExit(
+                  f"Worker version {version!r} is not compatible with collector v0.9. "
+                  "Run scripts/deploy_v09.ps1 first."
+              )
+          required = {'source_health', 'field_provenance', 'historical_stats', 'comparables'}
+          capabilities = set(data.get('capabilities') or [])
+          missing = required - capabilities
+          if missing:
+              raise SystemExit(f"Worker missing required capabilities: {sorted(missing)}")
+          PY
       - name: Install collector
         run: |
           python -m pip install --upgrade pip

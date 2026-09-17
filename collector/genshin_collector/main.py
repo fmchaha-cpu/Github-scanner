@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import uuid
 from collections import Counter
@@ -52,6 +53,13 @@ def _quality_metrics(rows, coverage, errors) -> dict:
             "candidate_detail_verified_pct": _pct(sum(r.verification_level == "detail" for r in candidates), len(candidates)),
             "identity_verified_pct": _pct(sum(r.identity_verified for r in pr), pn),
             "strict_live_pct": _pct(sum(r.strict_live for r in pr), pn),
+            "merged_anchor_count": sum(r.parser_strategy == "anchor_merged_v09" for r in pr),
+            "server_hydrated_url_or_context_pct": _pct(
+                sum((r.field_sources or {}).get("server") in {"url_slug", "query_context"} for r in pr), pn
+            ),
+            "seller_from_profile_pct": _pct(
+                sum((r.field_sources or {}).get("seller") in {"profile_link", "detail_profile_link"} for r in pr), pn
+            ),
             "avg_extraction_quality": round(sum(float(r.extraction_quality or 0) for r in pr) / pn, 1) if pn else 0.0,
         }
 
@@ -212,8 +220,6 @@ def _quality_metrics(rows, coverage, errors) -> dict:
         improvement_signals.append("same_content_across_queries")
     if repeated_http_content:
         improvement_signals.append("same_http_probe_content_across_queries")
-    if n >= 25 and sum(r.market_status in {"SOLD_CONFIRMED", "SOLD_CLAIMED", "EXPIRED_REMOVED"} for r in rows) < 3:
-        improvement_signals.append("historical_comparable_pool_still_small")
     if n and sum(bool(r.relisting_fingerprint) for r in rows) / n < 0.95:
         improvement_signals.append("relisting_fingerprint_coverage_low")
     if n and verification_reasons.get("calibration_gap", 0) == 0:
@@ -246,7 +252,10 @@ def _quality_metrics(rows, coverage, errors) -> dict:
         "strict_live_count": sum(r.strict_live for r in rows),
         "risk_flagged_count": sum(bool(r.risk_flags) for r in rows),
         "market_statuses": dict(Counter(r.market_status for r in rows)),
+        # Backward-compatible v0.7 name: this counts only historical outcomes directly observed
+        # during the current marketplace scan, NOT the persistent historical D1 repertoire.
         "historical_anchor_observations": sum(r.market_status in {"SOLD_CONFIRMED", "SOLD_CLAIMED"} for r in rows),
+        "current_scan_historical_anchor_observations": sum(r.market_status in {"SOLD_CONFIRMED", "SOLD_CLAIMED"} for r in rows),
         "fingerprint_groups": len({r.relisting_fingerprint for r in rows if r.relisting_fingerprint}),
         "completeness": completeness,
         "by_platform": dict(by_platform),
@@ -274,6 +283,27 @@ def _quality_metrics(rows, coverage, errors) -> dict:
     }
 
 
+def _version_major_minor(value: object) -> str:
+    text = str(value or "").strip().lstrip("v")
+    parts = text.split(".")
+    return ".".join(parts[:2]) if len(parts) >= 2 else text
+
+
+def _compact_source_health(rows: list[dict]) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("platform"):
+            continue
+        out[str(row["platform"])] = {
+            "status": row.get("status"),
+            "consecutive_blocked": row.get("consecutive_blocked"),
+            "consecutive_zero_yield": row.get("consecutive_zero_yield"),
+            "cooldown_until": row.get("cooldown_until"),
+            "last_reason": row.get("last_reason"),
+        }
+    return out
+
+
 async def run(config_path: str):
     cfg = load_config(config_path)
     api_url = os.environ.get("MARKET_API_URL", "").strip()
@@ -288,16 +318,72 @@ async def run(config_path: str):
     deep_verify_hard_cap = int(collector_cfg.get("deep_verify_hard_cap_per_source", 16))
     calibration_verify_sample = int(collector_cfg.get("calibration_verify_sample_per_source", 2))
     control_verify_sample = int(collector_cfg.get("control_verify_sample_per_source", 1))
+    merit_verify_sample = int(collector_cfg.get("merit_verify_sample_per_source", 4))
+    auto_import_historical_seed = bool(collector_cfg.get("auto_import_historical_seed", True))
 
     scan_id = str(uuid.uuid4())
     api = MarketApi(api_url, api_token)
-    await api.start_scan(scan_id, __version__, notes="scheduled collector v0.7 source-health+provenance+benchmarks")
 
+    worker_health: dict = {}
+    worker_health_error: str | None = None
+    try:
+        payload = await api.get_health()
+        worker_health = payload if isinstance(payload, dict) else {}
+    except Exception as exc:
+        worker_health_error = f"{type(exc).__name__}: {exc}"
+
+    # Fail closed on a stale Worker even outside GitHub Actions. A collector/Worker mismatch can
+    # silently drop provenance or historical telemetry, which is worse than a short explicit failure.
+    expected_worker = _version_major_minor(__version__)
+    if worker_health_error:
+        raise SystemExit(f"Worker health check failed before scan: {worker_health_error}")
+    worker_version = str(worker_health.get("version") or "unknown")
+    if _version_major_minor(worker_version) != expected_worker:
+        raise SystemExit(
+            f"Worker version mismatch: collector expects {expected_worker}, Worker reports {worker_version}. "
+            "Deploy scripts/deploy_v09.ps1 first."
+        )
+    required_capabilities = {"source_health", "field_provenance", "historical_stats", "comparables"}
+    worker_capabilities = {str(x) for x in (worker_health.get("capabilities") or [])}
+    missing_capabilities = sorted(required_capabilities - worker_capabilities)
+    if missing_capabilities:
+        raise SystemExit(f"Worker missing required capabilities: {missing_capabilities}")
+
+    # v0.9 self-heals the historical seed gap. The import endpoint is idempotent, and we only
+    # call it when the persistent tracker seed is missing/incomplete. A seed failure is recorded
+    # as telemetry but never blocks a live-market scan.
+    historical_seed_state: dict = {"enabled": auto_import_historical_seed, "attempted": False}
+    if auto_import_historical_seed:
+        seed_path = Path(__file__).resolve().parents[2] / "historical_seed_tracker_v26.json"
+        try:
+            seed_payload = json.loads(seed_path.read_text(encoding="utf-8"))
+            expected_seed = len(seed_payload.get("records") or [])
+            before = await api.get_historical_stats()
+            before_seed = int((before or {}).get("tracker_seed_records", 0) or 0)
+            historical_seed_state.update({"expected": expected_seed, "before": before_seed})
+            if before_seed < expected_seed:
+                historical_seed_state["attempted"] = True
+                result = await api.import_historical(seed_payload)
+                historical_seed_state["imported"] = int((result or {}).get("imported", 0) or 0)
+                historical_seed_state["import_errors"] = list((result or {}).get("errors") or [])[:5]
+                after = await api.get_historical_stats()
+                historical_seed_state["after"] = int((after or {}).get("tracker_seed_records", 0) or 0)
+                if historical_seed_state["after"] < expected_seed:
+                    historical_seed_state["error"] = "seed_verification_incomplete"
+            else:
+                historical_seed_state["after"] = before_seed
+        except Exception as exc:
+            historical_seed_state["error"] = f"{type(exc).__name__}: {exc}"
+
+    await api.start_scan(scan_id, __version__, notes="scheduled collector v0.9 PA-card-merge+detail-hydration+auto-history")
+
+    source_health_error: str | None = None
     try:
         source_health_payload = await api.get_source_health()
         source_health_rows = source_health_payload.get("sources", source_health_payload.get("rows", [])) if isinstance(source_health_payload, dict) else []
-    except Exception:
+    except Exception as exc:
         # Source-health is an optimization only. A temporary API/read failure must never stop scanning.
+        source_health_error = f"{type(exc).__name__}: {exc}"
         source_health_rows = []
     source_health = {str(r.get("platform")): r for r in source_health_rows if isinstance(r, dict) and r.get("platform")}
 
@@ -349,6 +435,7 @@ async def run(config_path: str):
                 deep_verify_hard_cap=int(source.get("deep_verify_hard_cap", deep_verify_hard_cap)),
                 calibration_verify_sample=int(source.get("calibration_verify_sample", calibration_verify_sample)),
                 control_verify_sample=int(source.get("control_verify_sample", control_verify_sample)),
+                merit_verify_sample=int(source.get("merit_verify_sample", merit_verify_sample)),
                 circuit_breaker_enabled=bool(source.get("circuit_breaker_enabled", True)),
                 circuit_breaker_blocked_threshold=int(source.get("circuit_breaker_blocked_threshold", 1)),
                 circuit_breaker_zero_yield_threshold=int(source.get("circuit_breaker_zero_yield_threshold", 4)),
@@ -374,14 +461,98 @@ async def run(config_path: str):
         metrics["changed_count"] = send_result.get("changed", 0)
         metrics["favorite_characters_configured"] = favorite_characters
 
+        worker_version = str(worker_health.get("version") or "unknown")
+        metrics["worker_api"] = {
+            "expected_version": expected_worker,
+            "reported_version": worker_version,
+            "compatible": _version_major_minor(worker_version) == expected_worker,
+            "health_error": worker_health_error,
+            "source_health_error": source_health_error,
+        }
+        metrics["source_health_state"] = _compact_source_health(source_health_rows)
+        metrics["historical_seed_state"] = historical_seed_state
+        if historical_seed_state.get("error"):
+            metrics["improvement_signals"].append("historical_seed_auto_import_failed")
+        if worker_health_error:
+            metrics["improvement_signals"].append("worker_health_unavailable")
+        elif _version_major_minor(worker_version) != expected_worker:
+            metrics["improvement_signals"].append("worker_version_mismatch")
+        if source_health_error:
+            metrics["improvement_signals"].append("source_health_api_unavailable")
+
+        historical_stats: dict = {}
+        historical_stats_error: str | None = None
+        try:
+            hist_payload = await api.get_historical_stats()
+            historical_stats = hist_payload if isinstance(hist_payload, dict) else {}
+        except Exception as exc:
+            historical_stats_error = f"{type(exc).__name__}: {exc}"
+        metrics["historical_pool"] = {
+            "total": int(historical_stats.get("total", 0) or 0),
+            "imported": int(historical_stats.get("imported", 0) or 0),
+            "tracker_seed_records": int(historical_stats.get("tracker_seed_records", 0) or 0),
+            "sold_confirmed": int((historical_stats.get("by_status") or {}).get("SOLD_CONFIRMED", 0) or 0),
+            "sold_claimed": int((historical_stats.get("by_status") or {}).get("SOLD_CLAIMED", 0) or 0),
+            "expired_removed": int((historical_stats.get("by_status") or {}).get("EXPIRED_REMOVED", 0) or 0),
+            "risk_contaminated": int((historical_stats.get("by_status") or {}).get("RISK_CONTAMINATED", 0) or 0),
+            "error": historical_stats_error,
+        }
+        if historical_stats_error:
+            metrics["improvement_signals"].append("historical_stats_unavailable")
+        elif metrics["historical_pool"]["total"] < 30:
+            metrics["improvement_signals"].append("historical_comparable_pool_still_small")
+        if not historical_stats_error and metrics["historical_pool"]["sold_confirmed"] < 8:
+            metrics["improvement_signals"].append("confirmed_sold_pool_thin")
+
+        # Passive market-intelligence pass: compare only the top current candidates against the
+        # persistent historical repertoire. This does not change alert decisions yet; it gives us
+        # measured evidence for future scoring/backtests.
+        candidate_comparables: list[dict] = []
+        comp_errors = 0
+        ranked_candidates = sorted(
+            [r for r in rows if r.is_candidate],
+            key=lambda r: (r.collector_priority, -(r.price_value or 10**9)), reverse=True,
+        )[:8]
+        for row in ranked_candidates:
+            try:
+                comp = await api.get_comparables(row.url, limit=30)
+                hs = comp.get("historical_summary", {}) if isinstance(comp, dict) else {}
+                candidate_comparables.append({
+                    "platform": row.platform, "url": row.url, "title": row.title[:220],
+                    "price": row.price_value, "currency": row.currency,
+                    "priority": row.collector_priority,
+                    "historical_count": int(hs.get("count", 0) or 0),
+                    "sold_confirmed_count": int(hs.get("sold_confirmed_count", 0) or 0),
+                    "weighted_median": hs.get("weighted_median"),
+                    "mad": hs.get("mad"),
+                    "effective_weight": hs.get("effective_weight"),
+                    "comparison_confidence": hs.get("comparison_confidence", "very_low"),
+                    "price_vs_historical_median_pct": comp.get("target_vs_historical_weighted_median_pct"),
+                    "raw_comparable_count": int(comp.get("raw_comparable_count", 0) or 0),
+                    "dedup_historical_count": int(comp.get("dedup_historical_count", 0) or 0),
+                })
+            except Exception:
+                comp_errors += 1
+        metrics["candidate_comparables"] = candidate_comparables
+        metrics["candidate_comparable_errors"] = comp_errors
+        comparable_ready = sum(
+            c.get("historical_count", 0) >= 2 and c.get("comparison_confidence") in {"low", "medium", "high"}
+            for c in candidate_comparables
+        )
+        metrics["candidate_comparable_coverage_pct"] = _pct(comparable_ready, len(ranked_candidates))
+        if ranked_candidates and comparable_ready < max(1, len(ranked_candidates) // 2):
+            metrics["improvement_signals"].append("candidate_historical_comparable_coverage_low")
+
+        metrics["improvement_signals"] = list(dict.fromkeys(metrics["improvement_signals"]))
         severity = "warning" if metrics["improvement_signals"] or all_errors else "info"
         await api.send_system_event(
             component="collector",
             severity=severity,
-            code="SCAN_QUALITY_V07",
+            code="SCAN_QUALITY_V09",
             message=(
                 f"scan {scan_id}: {len(rows)} listings, {candidates} candidates, "
-                f"{metrics['identity_verified_count']} identity-verified, {len(all_errors)} errors"
+                f"{metrics['identity_verified_count']} identity-verified, historical_pool={metrics['historical_pool']['total']}, "
+                f"{len(all_errors)} errors"
             ),
             details_json=metrics,
         )
@@ -408,7 +579,7 @@ async def run(config_path: str):
             await api.send_system_event(
                 component="collector",
                 severity="error",
-                code="SCAN_FAILED_V07",
+                code="SCAN_FAILED_V09",
                 message=str(exc),
                 details_json={"scan_id": scan_id, "errors": all_errors[:10]},
             )

@@ -89,7 +89,7 @@ class ListingObservation(BaseModel):
     is_candidate: bool = False
     # Means "eligible for human/ChatGPT deep review", never an autonomous buy alert.
     is_alert_candidate: bool = False
-    detector_version: str = "v0.7"
+    detector_version: str = "v2.6"
 
 
 class CoverageRow(BaseModel):
