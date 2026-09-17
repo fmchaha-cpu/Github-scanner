@@ -279,6 +279,81 @@ async function ensureV05Tables(env: Env) {
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_quality_snapshots_time ON quality_snapshots(created_at DESC)`).run();
 }
 
+
+async function ensureV06Tables(env: Env) {
+  await ensureV05Tables(env);
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS coverage_diagnostics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scan_run_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      path_key TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      fetch_mode TEXT,
+      http_status INTEGER,
+      elapsed_ms INTEGER,
+      html_bytes INTEGER,
+      text_chars INTEGER,
+      anchor_count INTEGER,
+      detail_link_count INTEGER,
+      parsed_count INTEGER,
+      page_title TEXT,
+      content_hash TEXT,
+      blocked_signals_json TEXT,
+      sample_detail_urls_json TEXT,
+      fallback_reason TEXT,
+      parser_strategy TEXT,
+      final_url TEXT,
+      unmatched_listing_like_count INTEGER,
+      sample_unmatched_listing_like_urls_json TEXT,
+      http_probe_html_bytes INTEGER,
+      http_probe_text_chars INTEGER,
+      http_probe_detail_link_count INTEGER,
+      http_probe_content_hash TEXT,
+      http_probe_blocked_signals_json TEXT,
+      http_probe_final_url TEXT,
+      http_probe_unmatched_listing_like_count INTEGER,
+      http_probe_sample_unmatched_listing_like_urls_json TEXT,
+      FOREIGN KEY(scan_run_id) REFERENCES scan_runs(id) ON DELETE CASCADE
+    )
+  `).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_coverage_diag_time ON coverage_diagnostics(observed_at DESC)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_coverage_diag_platform_time ON coverage_diagnostics(platform, observed_at DESC)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_coverage_diag_run_path ON coverage_diagnostics(scan_run_id, path_key)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_coverage_diag_hash ON coverage_diagnostics(platform, content_hash)`).run();
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS listing_verification_meta (
+      listing_id INTEGER PRIMARY KEY,
+      updated_at TEXT NOT NULL,
+      verification_reason TEXT,
+      parser_strategy TEXT,
+      detail_fetch_mode TEXT,
+      detail_fetch_fallback_reason TEXT,
+      detail_http_status INTEGER,
+      detail_html_bytes INTEGER,
+      detail_blocked_signals_json TEXT,
+      FOREIGN KEY(listing_id) REFERENCES listings(id) ON DELETE CASCADE
+    )
+  `).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_listing_verification_reason ON listing_verification_meta(verification_reason, updated_at DESC)`).run();
+
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS verification_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, scan_run_id TEXT NOT NULL, listing_id INTEGER NOT NULL,
+      platform TEXT NOT NULL, observed_at TEXT NOT NULL, verification_reason TEXT, fetch_mode TEXT,
+      fallback_reason TEXT, http_status INTEGER, html_bytes INTEGER, blocked_signals_json TEXT,
+      identity_verified INTEGER NOT NULL DEFAULT 0, strict_live INTEGER NOT NULL DEFAULT 0,
+      extraction_quality REAL, quality_flags_json TEXT,
+      FOREIGN KEY(scan_run_id) REFERENCES scan_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY(listing_id) REFERENCES listings(id) ON DELETE CASCADE
+    )
+  `).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_verification_events_time ON verification_events(observed_at DESC)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_verification_events_platform_time ON verification_events(platform, observed_at DESC)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_verification_events_reason_time ON verification_events(verification_reason, observed_at DESC)`).run();
+}
+
 function synthPathKey(r: AnyRow): string {
   return String(r.path_key || `${r.platform}|${r.query_family}|${r.page_label || "seed"}`);
 }
@@ -292,7 +367,6 @@ async function recordStatusEvent(env: Env, listingId: any, oldStatus: any, newSt
 }
 
 async function upsertListing(env: Env, o: AnyRow, scanRunId: string) {
-  await ensureV05Tables(env);
   const existing = await env.DB.prepare(
     "SELECT id, raw_hash, price_value, availability, seller FROM listings WHERE url = ?"
   ).bind(o.url).first();
@@ -379,6 +453,38 @@ async function upsertListing(env: Env, o: AnyRow, scanRunId: string) {
     JSON.stringify(o.quality_flags ?? []), o.detail_verified_at ?? null,
     o.manufactured_hits ?? 0, o.risk_hits ?? 0, o.old_alt_hits ?? 0
   ).run();
+
+  await env.DB.prepare(`
+    INSERT INTO listing_verification_meta(
+      listing_id,updated_at,verification_reason,parser_strategy,detail_fetch_mode,detail_fetch_fallback_reason,
+      detail_http_status,detail_html_bytes,detail_blocked_signals_json
+    ) VALUES (?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(listing_id) DO UPDATE SET
+      updated_at=excluded.updated_at, verification_reason=excluded.verification_reason,
+      parser_strategy=excluded.parser_strategy, detail_fetch_mode=excluded.detail_fetch_mode,
+      detail_fetch_fallback_reason=excluded.detail_fetch_fallback_reason, detail_http_status=excluded.detail_http_status,
+      detail_html_bytes=excluded.detail_html_bytes, detail_blocked_signals_json=excluded.detail_blocked_signals_json
+  `).bind(
+    listingId, o.observed_at ?? nowIso(), o.verification_reason ?? null, o.parser_strategy ?? null,
+    o.detail_fetch_mode ?? null, o.detail_fetch_fallback_reason ?? null, o.detail_http_status ?? null,
+    o.detail_html_bytes ?? null, JSON.stringify(o.detail_blocked_signals ?? [])
+  ).run();
+
+  // Keep every deep-verification attempt as an event, not only the latest state.
+  // This allows us to measure candidate/calibration success rates and parser regressions over time.
+  if (o.verification_reason || o.verification_level === "detail") {
+    await env.DB.prepare(`
+      INSERT INTO verification_events(
+        scan_run_id,listing_id,platform,observed_at,verification_reason,fetch_mode,fallback_reason,http_status,
+        html_bytes,blocked_signals_json,identity_verified,strict_live,extraction_quality,quality_flags_json
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).bind(
+      scanRunId,listingId,o.platform,o.observed_at??nowIso(),o.verification_reason??null,o.detail_fetch_mode??null,
+      o.detail_fetch_fallback_reason??null,o.detail_http_status??null,o.detail_html_bytes??null,
+      JSON.stringify(o.detail_blocked_signals??[]),o.identity_verified?1:0,o.strict_live?1:0,
+      o.extraction_quality??null,JSON.stringify(o.quality_flags??[])
+    ).run();
+  }
 
   const oldMeta = await env.DB.prepare("SELECT market_status FROM listing_market_meta WHERE listing_id=?").bind(listingId).first();
   let newStatus = String(o.market_status || (o.strict_live ? "STRICT_LIVE" : "ACTIVE_UNCONFIRMED"));
@@ -484,7 +590,7 @@ async function processDisappearance(env: Env, scanRunId: string) {
 }
 
 async function qualitySnapshot(env: Env, hours: number) {
-  await ensureV05Tables(env);
+  await ensureV06Tables(env);
   const since = new Date(Date.now() - hours * 3600_000).toISOString();
 
   const completeness = await env.DB.prepare(`
@@ -501,9 +607,14 @@ async function qualitySnapshot(env: Env, hours: number) {
 
   const byPlatform = await env.DB.prepare(`
     SELECT l.platform, COUNT(*) AS listings,
+      SUM(CASE WHEN l.price_value IS NOT NULL THEN 1 ELSE 0 END) AS with_price,
       SUM(CASE WHEN l.seller IS NOT NULL THEN 1 ELSE 0 END) AS with_seller,
       SUM(CASE WHEN l.server IS NOT NULL THEN 1 ELSE 0 END) AS with_server,
-      SUM(CASE WHEN q.identity_verified=1 THEN 1 ELSE 0 END) AS identity_verified
+      SUM(CASE WHEN l.availability IS NOT NULL THEN 1 ELSE 0 END) AS with_availability,
+      SUM(CASE WHEN q.verification_level='detail' THEN 1 ELSE 0 END) AS detail_verified,
+      SUM(CASE WHEN q.identity_verified=1 THEN 1 ELSE 0 END) AS identity_verified,
+      SUM(CASE WHEN q.strict_live=1 THEN 1 ELSE 0 END) AS strict_live,
+      AVG(q.extraction_quality) AS avg_extraction_quality
     FROM listings l LEFT JOIN listing_quality q ON q.listing_id=l.id
     WHERE l.last_seen>=? GROUP BY l.platform ORDER BY listings DESC
   `).bind(since).all();
@@ -512,6 +623,58 @@ async function qualitySnapshot(env: Env, hours: number) {
     SELECT platform, query_family, status, COUNT(*) AS observations, SUM(result_count) AS results
     FROM coverage_paths WHERE observed_at>=?
     GROUP BY platform, query_family, status ORDER BY platform, query_family, status
+  `).bind(since).all();
+
+  const diagnostics = await env.DB.prepare(`
+    SELECT platform,
+      COUNT(*) AS pages,
+      SUM(CASE WHEN fetch_mode='browser' THEN 1 ELSE 0 END) AS browser_pages,
+      SUM(CASE WHEN fallback_reason IS NOT NULL THEN 1 ELSE 0 END) AS fallback_pages,
+      SUM(CASE WHEN COALESCE(detail_link_count,0)=0 THEN 1 ELSE 0 END) AS zero_detail_pages,
+      SUM(CASE WHEN COALESCE(parsed_count,0)=0 THEN 1 ELSE 0 END) AS zero_parsed_pages,
+      SUM(CASE WHEN blocked_signals_json IS NOT NULL AND blocked_signals_json<>'[]' THEN 1 ELSE 0 END) AS blocked_pages,
+      SUM(CASE WHEN http_probe_blocked_signals_json IS NOT NULL AND http_probe_blocked_signals_json<>'[]' THEN 1 ELSE 0 END) AS http_probe_blocked_pages,
+      SUM(CASE WHEN http_probe_detail_link_count=0 AND fallback_reason IS NOT NULL THEN 1 ELSE 0 END) AS http_zero_link_fallbacks,
+      SUM(COALESCE(unmatched_listing_like_count,0)) AS unmatched_listing_like_links,
+      SUM(COALESCE(http_probe_unmatched_listing_like_count,0)) AS http_probe_unmatched_listing_like_links,
+      SUM(COALESCE(detail_link_count,0)) AS detail_links,
+      SUM(COALESCE(parsed_count,0)) AS parsed_rows,
+      AVG(elapsed_ms) AS avg_elapsed_ms,
+      COUNT(DISTINCT content_hash) AS unique_content_hashes,
+      COUNT(DISTINCT http_probe_content_hash) AS unique_http_probe_hashes
+    FROM coverage_diagnostics WHERE observed_at>=?
+    GROUP BY platform ORDER BY pages DESC
+  `).bind(since).all();
+
+  const repeatedContent = await env.DB.prepare(`
+    SELECT platform, content_hash, COUNT(DISTINCT path_key) AS paths, MAX(observed_at) AS latest
+    FROM coverage_diagnostics
+    WHERE observed_at>=? AND content_hash IS NOT NULL
+    GROUP BY platform, content_hash HAVING COUNT(DISTINCT path_key)>=3
+    ORDER BY paths DESC, latest DESC LIMIT 50
+  `).bind(since).all();
+
+  const repeatedHttpContent = await env.DB.prepare(`
+    SELECT platform, http_probe_content_hash AS content_hash, COUNT(DISTINCT path_key) AS paths, MAX(observed_at) AS latest
+    FROM coverage_diagnostics
+    WHERE observed_at>=? AND http_probe_content_hash IS NOT NULL
+    GROUP BY platform, http_probe_content_hash HAVING COUNT(DISTINCT path_key)>=3
+    ORDER BY paths DESC, latest DESC LIMIT 50
+  `).bind(since).all();
+
+  const verificationReasons = await env.DB.prepare(`
+    SELECT verification_reason, COUNT(*) AS n FROM listing_verification_meta v
+    JOIN listings l ON l.id=v.listing_id WHERE l.last_seen>=? AND verification_reason IS NOT NULL
+    GROUP BY verification_reason ORDER BY n DESC
+  `).bind(since).all();
+
+  const verificationPerformance = await env.DB.prepare(`
+    SELECT platform, verification_reason, COUNT(*) AS attempts,
+      SUM(identity_verified) AS identity_verified, SUM(strict_live) AS strict_live,
+      SUM(CASE WHEN blocked_signals_json IS NOT NULL AND blocked_signals_json<>'[]' THEN 1 ELSE 0 END) AS blocked_attempts,
+      AVG(extraction_quality) AS avg_extraction_quality
+    FROM verification_events WHERE observed_at>=?
+    GROUP BY platform, verification_reason ORDER BY attempts DESC
   `).bind(since).all();
 
   const statuses = await env.DB.prepare(`
@@ -557,6 +720,31 @@ async function qualitySnapshot(env: Env, hours: number) {
   if (Number(historical?.n || 0) < 30) suggestions.push({ priority: "medium", code: "historical_pool_thin", message: "Historical comparable pool is still small; keep accumulating outcomes and import known historical URLs with explicit status evidence." });
   if (Number(historical?.sold_confirmed || 0) < 8) suggestions.push({ priority: "medium", code: "confirmed_sold_pool_thin", message: "Few exact-detail sold/closed anchors exist. Treat price comparisons as low-confidence until this grows." });
   const coverageRows = coverage.results as AnyRow[];
+  const diagRows = diagnostics.results as AnyRow[];
+  const platformRows = byPlatform.results as AnyRow[];
+  for (const p of platformRows) {
+    const pn = Number(p.listings || 0);
+    const sellerPct = pn ? 100 * Number(p.with_seller || 0) / pn : 0;
+    if (pn >= 5 && sellerPct < 40) suggestions.push({ priority: "high", code: `seller_extraction_low:${p.platform}`, message: `${p.platform} seller extraction is only ${sellerPct.toFixed(1)}%.` });
+  }
+  for (const d of diagRows) {
+    const links = Number(d.detail_links || 0), parsed = Number(d.parsed_rows || 0), pages = Number(d.pages || 0);
+    if (pages && parsed === 0) suggestions.push({ priority: "high", code: `source_zero_yield:${d.platform}`, message: `${d.platform} fetched pages but parsed zero listings; inspect challenge/fallback and detail URL patterns.` });
+    if (links >= 5 && parsed / links < 0.55) suggestions.push({ priority: "high", code: `parser_yield_low:${d.platform}`, message: `${d.platform} parser converted less than 55% of discovered detail links into listing rows.` });
+    if (Number(d.blocked_pages || 0) > 0) suggestions.push({ priority: "high", code: `blocking_detected:${d.platform}`, message: `${d.platform} showed challenge/block signals on ${d.blocked_pages} final page(s).` });
+    if (Number(d.http_probe_blocked_pages || 0) > 0) suggestions.push({ priority: "medium", code: `http_probe_blocked:${d.platform}`, message: `${d.platform} HTTP fetches showed challenge/block signals before browser fallback on ${d.http_probe_blocked_pages} page(s).` });
+    if (Number(d.http_zero_link_fallbacks || 0) >= 2) suggestions.push({ priority: "medium", code: `http_shell_or_redirect:${d.platform}`, message: `${d.platform} repeatedly returned HTTP pages with zero listing links; browser fallback was required.` });
+    if (Number(d.unmatched_listing_like_links || 0) > 0 || Number(d.http_probe_unmatched_listing_like_links || 0) > 0) suggestions.push({ priority: "high", code: `detail_pattern_drift:${d.platform}`, message: `${d.platform} exposed listing-like URLs that did not match the configured detail pattern; inspect diagnostics samples.` });
+  }
+  for (const v of verificationPerformance.results as AnyRow[]) {
+    const attempts = Number(v.attempts || 0);
+    const identityRate = attempts ? 100 * Number(v.identity_verified || 0) / attempts : 0;
+    if (String(v.verification_reason) === "candidate" && attempts >= 4 && identityRate < 25) {
+      suggestions.push({ priority: "high", code: `candidate_verification_low:${v.platform}`, message: `${v.platform} candidate deep checks verify identity only ${identityRate.toFixed(1)}% of the time; inspect seller/server/detail extraction before trusting alerts.` });
+    }
+  }
+  if ((repeatedContent.results as AnyRow[]).length) suggestions.push({ priority: "medium", code: "same_content_across_queries", message: "Three or more query paths returned identical final page content. This can indicate redirects, challenge pages, or dead category URLs." });
+  if ((repeatedHttpContent.results as AnyRow[]).length) suggestions.push({ priority: "medium", code: "same_http_probe_content_across_queries", message: "Three or more query paths returned identical HTTP-probe content before browser fallback; likely shell, redirect, or challenge behavior." });
   const errors = coverageRows.filter((r) => String(r.status) === "error");
   if (errors.length) suggestions.push({ priority: "high", code: "source_errors_present", message: `${errors.length} coverage bucket(s) errored in the selected window.` });
   const zeroHits = coverageRows.filter((r) => String(r.status).startsWith("ok:") && Number(r.results || 0) === 0);
@@ -571,8 +759,23 @@ async function qualitySnapshot(env: Env, hours: number) {
       seller_pct: pct(completeness?.with_seller), availability_pct: pct(completeness?.with_availability),
       identity_verified_pct: pct(completeness?.identity_verified), strict_live_pct: pct(completeness?.strict_live),
     },
-    by_platform: byPlatform.results,
+    by_platform: (byPlatform.results as AnyRow[]).map((p) => {
+      const pn = Number(p.listings || 0);
+      const ppct = (v: any) => pn ? Number((100 * Number(v || 0) / pn).toFixed(1)) : 0;
+      return { ...p, price_pct: ppct(p.with_price), seller_pct: ppct(p.with_seller), server_pct: ppct(p.with_server),
+        availability_pct: ppct(p.with_availability), detail_verified_pct: ppct(p.detail_verified),
+        identity_verified_pct: ppct(p.identity_verified), strict_live_pct: ppct(p.strict_live) };
+    }),
     coverage: coverage.results,
+    coverage_diagnostics: diagnostics.results,
+    repeated_content_groups: repeatedContent.results,
+    repeated_http_probe_content_groups: repeatedHttpContent.results,
+    verification_reasons: verificationReasons.results,
+    verification_performance: (verificationPerformance.results as AnyRow[]).map((v) => {
+      const attempts = Number(v.attempts || 0);
+      return { ...v, identity_success_pct: attempts ? Number((100*Number(v.identity_verified||0)/attempts).toFixed(1)) : 0,
+        strict_live_pct: attempts ? Number((100*Number(v.strict_live||0)/attempts).toFixed(1)) : 0 };
+    }),
     market_statuses: statuses.results,
     historical_pool: historical,
     probable_duplicate_groups: Number(duplicateGroups?.n || 0),
@@ -588,10 +791,13 @@ async function joinedListingByUrl(env: Env, listingUrl: string) {
       q.extraction_quality, q.favorite_characters_json, q.archetypes_json, q.risk_flags_json,
       q.quality_flags_json, q.detail_verified_at, q.manufactured_hits, q.risk_hits, q.old_alt_hits,
       m.market_status, m.status_confidence, m.status_evidence, m.status_updated_at, m.first_removed_at,
-      m.relisting_fingerprint, m.limited_c6_characters_json, m.c6r1_characters_json, m.character_tags_json, m.discovery_paths_json
+      m.relisting_fingerprint, m.limited_c6_characters_json, m.c6r1_characters_json, m.character_tags_json, m.discovery_paths_json,
+      v.verification_reason, v.parser_strategy, v.detail_fetch_mode, v.detail_fetch_fallback_reason,
+      v.detail_http_status, v.detail_html_bytes, v.detail_blocked_signals_json
     FROM listings l
     LEFT JOIN listing_quality q ON q.listing_id=l.id
     LEFT JOIN listing_market_meta m ON m.listing_id=l.id
+    LEFT JOIN listing_verification_meta v ON v.listing_id=l.id
     WHERE l.url=?
   `).bind(listingUrl).first();
 }
@@ -765,6 +971,40 @@ export default {
       return json({ since, rows: result.results });
     }
 
+    if (request.method === "GET" && path === "/v1/coverage/diagnostics") {
+      await ensureV06Tables(env);
+      const hours = Math.min(Math.max(Number(url.searchParams.get("hours") || "24"), 1), 168);
+      const since = new Date(Date.now() - hours * 3600_000).toISOString();
+      const platform = url.searchParams.get("platform");
+      const result = await env.DB.prepare(`
+        SELECT scan_run_id,platform,path_key,observed_at,fetch_mode,http_status,elapsed_ms,html_bytes,text_chars,
+          anchor_count,detail_link_count,parsed_count,page_title,content_hash,blocked_signals_json,
+          sample_detail_urls_json,fallback_reason,parser_strategy,final_url,unmatched_listing_like_count,
+          sample_unmatched_listing_like_urls_json,http_probe_html_bytes,http_probe_text_chars,
+          http_probe_detail_link_count,http_probe_content_hash,http_probe_blocked_signals_json,
+          http_probe_final_url,http_probe_unmatched_listing_like_count,http_probe_sample_unmatched_listing_like_urls_json
+        FROM coverage_diagnostics WHERE observed_at>=? AND (? IS NULL OR platform=?)
+        ORDER BY observed_at DESC LIMIT 2000
+      `).bind(since, platform, platform).all();
+      return json({ since, platform_filter: platform, count: result.results.length, diagnostics: result.results });
+    }
+
+    if (request.method === "GET" && path === "/v1/verification/events") {
+      await ensureV06Tables(env);
+      const hours = Math.min(Math.max(Number(url.searchParams.get("hours") || "24"), 1), 24 * 30);
+      const since = new Date(Date.now() - hours * 3600_000).toISOString();
+      const platform = url.searchParams.get("platform");
+      const result = await env.DB.prepare(`
+        SELECT e.id,e.scan_run_id,e.platform,e.observed_at,e.verification_reason,e.fetch_mode,e.fallback_reason,
+          e.http_status,e.html_bytes,e.blocked_signals_json,e.identity_verified,e.strict_live,e.extraction_quality,
+          e.quality_flags_json,l.url,l.title,l.seller,l.server,l.price_value,l.currency
+        FROM verification_events e JOIN listings l ON l.id=e.listing_id
+        WHERE e.observed_at>=? AND (? IS NULL OR e.platform=?)
+        ORDER BY e.observed_at DESC LIMIT 2000
+      `).bind(since,platform,platform).all();
+      return json({ since, platform_filter: platform, count: result.results.length, events: result.results });
+    }
+
     if (request.method === "GET" && path === "/v1/quality/recent") {
       const hours = Math.min(Math.max(Number(url.searchParams.get("hours") || "24"), 1), 168);
       return json(await qualitySnapshot(env, hours));
@@ -775,6 +1015,50 @@ export default {
       const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || "20"), 1), 100);
       const r = await env.DB.prepare("SELECT * FROM quality_snapshots ORDER BY created_at DESC LIMIT ?").bind(limit).all();
       return json({ count: r.results.length, snapshots: r.results });
+    }
+
+    if (request.method === "GET" && path === "/v1/quality/trends") {
+      await ensureV06Tables(env);
+      const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || "20"), 2), 100);
+      const r = await env.DB.prepare("SELECT id,scan_run_id,created_at,metrics_json FROM quality_snapshots ORDER BY created_at DESC LIMIT ?").bind(limit).all();
+      const points = (r.results as AnyRow[]).map((x) => {
+        let m: AnyRow = {};
+        try { m = JSON.parse(String(x.metrics_json || "{}")); } catch {}
+        const c = m.completeness || {};
+        const platformSummary: AnyRow = {};
+        for (const p of (m.by_platform || [])) platformSummary[String(p.platform)] = {
+          listings: Number(p.listings || 0), price_pct: p.price_pct ?? null, server_pct: p.server_pct ?? null,
+          seller_pct: p.seller_pct ?? null, availability_pct: p.availability_pct ?? null,
+          detail_verified_pct: p.detail_verified_pct ?? null, identity_verified_pct: p.identity_verified_pct ?? null,
+          strict_live_pct: p.strict_live_pct ?? null, avg_extraction_quality: p.avg_extraction_quality ?? null,
+        };
+        return { id: x.id, scan_run_id: x.scan_run_id, created_at: x.created_at,
+          price_pct: c.price_pct ?? null, server_pct: c.server_pct ?? null, seller_pct: c.seller_pct ?? null,
+          availability_pct: c.availability_pct ?? null, identity_verified_pct: c.identity_verified_pct ?? null,
+          strict_live_pct: c.strict_live_pct ?? null,
+          historical_pool_n: Number(m.historical_pool?.n || 0), probable_duplicate_groups: Number(m.probable_duplicate_groups || 0),
+          platforms: platformSummary, suggestions: m.suggestions || [] };
+      });
+      const newest = points[0] || null, oldest = points[points.length - 1] || null;
+      const delta: AnyRow = {};
+      if (newest && oldest) for (const k of ["price_pct","server_pct","seller_pct","availability_pct","identity_verified_pct","strict_live_pct","historical_pool_n"]) {
+        const a = Number((newest as AnyRow)[k]), b = Number((oldest as AnyRow)[k]);
+        delta[k] = Number.isFinite(a) && Number.isFinite(b) ? Number((a-b).toFixed(2)) : null;
+      }
+      const platformDelta: AnyRow = {};
+      if (newest && oldest) {
+        const names = new Set([...Object.keys((newest as AnyRow).platforms || {}), ...Object.keys((oldest as AnyRow).platforms || {})]);
+        for (const name of names) {
+          const a = ((newest as AnyRow).platforms || {})[name] || {};
+          const b = ((oldest as AnyRow).platforms || {})[name] || {};
+          platformDelta[name] = {};
+          for (const k of ["listings","price_pct","server_pct","seller_pct","availability_pct","detail_verified_pct","identity_verified_pct","strict_live_pct","avg_extraction_quality"]) {
+            const av = Number(a[k]), bv = Number(b[k]);
+            platformDelta[name][k] = Number.isFinite(av) && Number.isFinite(bv) ? Number((av-bv).toFixed(2)) : null;
+          }
+        }
+      }
+      return json({ count: points.length, newest, oldest, delta, platform_delta: platformDelta, points });
     }
 
     if (request.method === "GET" && path === "/v1/historical/recent") {
@@ -878,7 +1162,7 @@ export default {
     }
 
     if (request.method === "POST" && path === "/v1/coverage/batch") {
-      await ensureV05Tables(env);
+      await ensureV06Tables(env);
       const body = await readJson<{ scan_run_id: string; rows: AnyRow[] }>(request);
       for (const r of body.rows) {
         await env.DB.prepare(`
@@ -891,12 +1175,36 @@ export default {
           VALUES (?,?,?,?,?,?,?,?,?,?)
         `).bind(body.scan_run_id,r.platform,r.query_family,r.query_text??null,r.page_label??null,
           synthPathKey(r),r.status,r.result_count??0,r.error??null,r.observed_at??nowIso()).run();
+        // Diagnostics are only meaningful for paths that actually fetched a page.
+        // Rotation skips / disabled sources remain visible in coverage_paths without polluting parser-health metrics.
+        if (r.fetch_mode || r.content_hash || r.elapsed_ms != null || r.html_bytes != null) {
+          await env.DB.prepare(`
+            INSERT INTO coverage_diagnostics(
+              scan_run_id,platform,path_key,observed_at,fetch_mode,http_status,elapsed_ms,html_bytes,text_chars,
+              anchor_count,detail_link_count,parsed_count,page_title,content_hash,blocked_signals_json,
+              sample_detail_urls_json,fallback_reason,parser_strategy,final_url,unmatched_listing_like_count,
+              sample_unmatched_listing_like_urls_json,http_probe_html_bytes,http_probe_text_chars,
+              http_probe_detail_link_count,http_probe_content_hash,http_probe_blocked_signals_json,http_probe_final_url,
+              http_probe_unmatched_listing_like_count,http_probe_sample_unmatched_listing_like_urls_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          `).bind(
+            body.scan_run_id,r.platform,synthPathKey(r),r.observed_at??nowIso(),r.fetch_mode??null,r.http_status??null,
+            r.elapsed_ms??null,r.html_bytes??null,r.text_chars??null,r.anchor_count??null,r.detail_link_count??null,
+            r.parsed_count??r.result_count??null,r.page_title??null,r.content_hash??null,
+            JSON.stringify(r.blocked_signals??[]),JSON.stringify(r.sample_detail_urls??[]),r.fallback_reason??null,
+            r.parser_strategy??null,r.final_url??null,r.unmatched_listing_like_count??null,
+            JSON.stringify(r.sample_unmatched_listing_like_urls??[]),r.http_probe_html_bytes??null,r.http_probe_text_chars??null,
+            r.http_probe_detail_link_count??null,r.http_probe_content_hash??null,
+            JSON.stringify(r.http_probe_blocked_signals??[]),r.http_probe_final_url??null,
+            r.http_probe_unmatched_listing_like_count??null,JSON.stringify(r.http_probe_sample_unmatched_listing_like_urls??[])
+          ).run();
+        }
       }
       return json({ ok: true, inserted: body.rows.length });
     }
 
     if (request.method === "POST" && path === "/v1/listings/batch") {
-      await ensureV05Tables(env);
+      await ensureV06Tables(env);
       const body = await readJson<{ scan_run_id: string; listings: AnyRow[] }>(request);
       let changed = 0;
       for (const observation of body.listings) {
@@ -907,7 +1215,7 @@ export default {
     }
 
     if (request.method === "POST" && path === "/v1/scan/finish") {
-      await ensureV05Tables(env);
+      await ensureV06Tables(env);
       const body = await readJson<AnyRow>(request);
       const disappearance = await processDisappearance(env, body.id);
       await env.DB.prepare(`

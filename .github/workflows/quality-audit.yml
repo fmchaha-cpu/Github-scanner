@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fetch quality report
+      - name: Fetch quality, trend and parser diagnostics
         env:
           MARKET_API_URL: ${{ secrets.MARKET_API_URL }}
         shell: bash
@@ -18,19 +18,89 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json, os, urllib.request
-          url = os.environ['MARKET_API_URL'].rstrip('/') + '/v1/quality/recent?hours=24'
-          with urllib.request.urlopen(url, timeout=30) as r:
-              data = json.load(r)
-          print(json.dumps(data, indent=2))
+
+          base = os.environ['MARKET_API_URL'].rstrip('/')
+          def get(path):
+              with urllib.request.urlopen(base + path, timeout=30) as r:
+                  return json.load(r)
+
+          quality = get('/v1/quality/recent?hours=24')
+          trends = get('/v1/quality/trends?limit=14')
+          diagnostics = get('/v1/coverage/diagnostics?hours=24')
+          verification = get('/v1/verification/events?hours=24')
+
+          print('QUALITY')
+          print(json.dumps(quality, indent=2))
+          print('TRENDS')
+          print(json.dumps(trends, indent=2))
+          print('DIAGNOSTICS')
+          print(json.dumps(diagnostics, indent=2))
+          print('VERIFICATION EVENTS')
+          print(json.dumps(verification, indent=2))
+
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
               f.write('# Genshin market quality audit\n\n')
-              c = data.get('completeness') or {}
-              f.write(f"Listings: **{c.get('n', 0)}**  \n")
-              f.write(f"Price: **{c.get('price_pct', 0)}%** | Server: **{c.get('server_pct', 0)}%** | Seller: **{c.get('seller_pct', 0)}%**  \n")
-              h = data.get('historical_pool') or {}
-              f.write(f"Historical pool: **{h.get('n', 0)}** | Sold-confirmed anchors: **{h.get('sold_confirmed', 0)}**\n\n")
+              c = quality.get('completeness') or {}
+              f.write(f"Listings (24h): **{c.get('n', 0)}**  \n")
+              f.write(
+                  f"Price: **{c.get('price_pct', 0)}%** | Server: **{c.get('server_pct', 0)}%** | "
+                  f"Seller: **{c.get('seller_pct', 0)}%** | Availability: **{c.get('availability_pct', 0)}%**  \n"
+              )
+              f.write(
+                  f"Identity verified: **{c.get('identity_verified_pct', 0)}%** | "
+                  f"Strict live: **{c.get('strict_live_pct', 0)}%**\n\n"
+              )
+
+              f.write('## Per-platform quality\n\n')
+              f.write('| Platform | Listings | Price | Server | Seller | Availability | Detail verified | Identity |\n')
+              f.write('|---|---:|---:|---:|---:|---:|---:|---:|\n')
+              for p in quality.get('by_platform') or []:
+                  f.write(
+                      f"| {p.get('platform','?')} | {p.get('listings',0)} | {p.get('price_pct',0)}% | "
+                      f"{p.get('server_pct',0)}% | {p.get('seller_pct',0)}% | {p.get('availability_pct',0)}% | "
+                      f"{p.get('detail_verified_pct',0)}% | {p.get('identity_verified_pct',0)}% |\n"
+                  )
+
+              f.write('\n## Fetch/parser diagnostics\n\n')
+              f.write('| Platform | Pages | Browser | Fallback | Zero parsed | Blocked | Pattern-miss links | Parse yield |\n')
+              f.write('|---|---:|---:|---:|---:|---:|---:|---:|\n')
+              for d in quality.get('coverage_diagnostics') or []:
+                  links = int(d.get('detail_links') or 0)
+                  parsed = int(d.get('parsed_rows') or 0)
+                  yield_pct = round(100*parsed/links, 1) if links else 0
+                  unmatched = int(d.get('unmatched_listing_like_links') or 0) + int(d.get('http_probe_unmatched_listing_like_links') or 0)
+                  blocked = int(d.get('blocked_pages') or 0) + int(d.get('http_probe_blocked_pages') or 0)
+                  f.write(
+                      f"| {d.get('platform','?')} | {d.get('pages',0)} | {d.get('browser_pages',0)} | "
+                      f"{d.get('fallback_pages',0)} | {d.get('zero_parsed_pages',0)} | {blocked} | {unmatched} | {yield_pct}% |\n"
+                  )
+
+              h = quality.get('historical_pool') or {}
+              f.write(
+                  f"\nHistorical pool: **{h.get('n', 0)}** | Sold-confirmed anchors: "
+                  f"**{h.get('sold_confirmed', 0)}** | Sold-claimed: **{h.get('sold_claimed', 0)}**\n\n"
+              )
+
+              f.write('## Verification performance\n\n')
+              vp = quality.get('verification_performance') or []
+              if not vp:
+                  f.write('- No verification attempts recorded in the selected window.\n')
+              for v in vp:
+                  f.write(
+                      f"- **{v.get('platform','?')} / {v.get('verification_reason') or 'unknown'}**: "
+                      f"{v.get('attempts',0)} attempts, identity {v.get('identity_success_pct',0)}%, "
+                      f"strict-live {v.get('strict_live_pct',0)}%\n"
+                  )
+
+              f.write('\n## Trend since oldest retained snapshot\n\n')
+              delta = trends.get('delta') or {}
+              f.write(
+                  f"Seller **{delta.get('seller_pct')} pp**, server **{delta.get('server_pct')} pp**, "
+                  f"identity **{delta.get('identity_verified_pct')} pp**, strict-live **{delta.get('strict_live_pct')} pp**\n\n"
+              )
+
               f.write('## Suggestions\n')
-              suggestions = data.get('suggestions') or []
+              suggestions = quality.get('suggestions') or []
               if not suggestions:
                   f.write('- No current quality warning signals.\n')
               for s in suggestions:

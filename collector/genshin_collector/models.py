@@ -66,6 +66,13 @@ class ListingObservation(BaseModel):
     verification_level: str = "card"
     extraction_quality: Optional[float] = None
     detail_verified_at: Optional[str] = None
+    verification_reason: Optional[str] = None
+    parser_strategy: Optional[str] = None
+    detail_fetch_mode: Optional[str] = None
+    detail_fetch_fallback_reason: Optional[str] = None
+    detail_http_status: Optional[int] = None
+    detail_html_bytes: Optional[int] = None
+    detail_blocked_signals: list[str] = Field(default_factory=list)
 
     # v0.5 market-history / comparable metadata. These are evidence labels,
     # never guarantees that a transaction actually settled at the listed price.
@@ -80,7 +87,7 @@ class ListingObservation(BaseModel):
     is_candidate: bool = False
     # Means "eligible for human/ChatGPT deep review", never an autonomous buy alert.
     is_alert_candidate: bool = False
-    detector_version: str = "v1"
+    detector_version: str = "v0.6"
 
 
 class CoverageRow(BaseModel):
@@ -93,3 +100,30 @@ class CoverageRow(BaseModel):
     result_count: int = 0
     error: Optional[str] = None
     observed_at: str = Field(default_factory=utcnow_iso)
+
+    # v0.6 observability. These fields describe how a marketplace page was fetched and parsed.
+    fetch_mode: Optional[str] = None
+    http_status: Optional[int] = None
+    elapsed_ms: Optional[int] = None
+    html_bytes: Optional[int] = None
+    text_chars: Optional[int] = None
+    anchor_count: Optional[int] = None
+    detail_link_count: Optional[int] = None
+    parsed_count: Optional[int] = None
+    page_title: Optional[str] = None
+    content_hash: Optional[str] = None
+    blocked_signals: list[str] = Field(default_factory=list)
+    sample_detail_urls: list[str] = Field(default_factory=list)
+    fallback_reason: Optional[str] = None
+    parser_strategy: Optional[str] = None
+    final_url: Optional[str] = None
+    unmatched_listing_like_count: Optional[int] = None
+    sample_unmatched_listing_like_urls: list[str] = Field(default_factory=list)
+    http_probe_html_bytes: Optional[int] = None
+    http_probe_text_chars: Optional[int] = None
+    http_probe_detail_link_count: Optional[int] = None
+    http_probe_content_hash: Optional[str] = None
+    http_probe_blocked_signals: list[str] = Field(default_factory=list)
+    http_probe_final_url: Optional[str] = None
+    http_probe_unmatched_listing_like_count: Optional[int] = None
+    http_probe_sample_unmatched_listing_like_urls: list[str] = Field(default_factory=list)

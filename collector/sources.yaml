@@ -10,15 +10,25 @@ preferences:
 
 collector:
   deep_verify_limit_per_source: 6
+  deep_verify_hard_cap_per_source: 16
+  calibration_verify_sample_per_source: 2
 
 sources:
   - name: PlayerAuctions
     enabled: true
     use_browser_fallback: true
-    deep_verify_limit: 8
+    deep_verify_limit: 10
+    deep_verify_hard_cap: 20
+    calibration_verify_sample: 3
     detail_patterns:
       - '/genshin-impact-account/\d+a'
     scans:
+      # Broad index catches cheap anomalies that character/category pages can miss.
+      - family: all_accounts
+        label: Full Genshin account index
+        max_pages: 2
+        url: https://www.playerauctions.com/genshin-impact-account/
+
       # Always-on high-recall anchors.
       - family: eu_all
         label: EU account index
@@ -86,6 +96,8 @@ sources:
   - name: ZeusX
     enabled: true
     use_browser_fallback: true
+    deep_verify_limit: 8
+    calibration_verify_sample: 2
     detail_patterns:
       - '/item/'
       - '/listing/'
@@ -99,6 +111,8 @@ sources:
   - name: EpicNPC
     enabled: true
     use_browser_fallback: true
+    deep_verify_limit: 10
+    calibration_verify_sample: 3
     detail_patterns:
       - '/threads/'
     scans:
@@ -111,6 +125,8 @@ sources:
   - name: PlayerUp
     enabled: true
     use_browser_fallback: true
+    deep_verify_limit: 10
+    calibration_verify_sample: 3
     detail_patterns:
       - '/threads/'
     scans:

@@ -6,8 +6,8 @@ Public marketplace pages
                    |
                    v
         GitHub Actions collector
-         every 30 minutes
-   HTTP first -> Playwright fallback
+         once per hour
+   HTTP probe -> quality check -> Playwright fallback when needed
                    |
                    v
          Cloudflare Worker API

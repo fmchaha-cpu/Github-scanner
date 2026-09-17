@@ -43,10 +43,11 @@ async def run(
     platform = platform or infer_platform(url)
     scan_id = str(uuid.uuid4())
     api = MarketApi(api_url, token)
-    await api.start_scan(scan_id, __version__, notes="manual exact-URL ingest v0.5")
+    await api.start_scan(scan_id, __version__, notes="manual exact-URL ingest v0.6")
     adapter = GenericMarketplaceAdapter(platform, [], [r".*"], use_browser_fallback=True, deep_verify_limit=1)
     try:
-        html, mode = await adapter._fetch(url)
+        fetched = await adapter._fetch(url, expect_listing_links=False)
+        html, mode = fetched.html, fetched.mode
         base = ListingObservation(
             platform=platform,
             external_id=infer_external_id(platform, url),
@@ -55,6 +56,13 @@ async def run(
             data_confidence=60,
         )
         row = adapter._parse_detail(base, html)
+        row.verification_reason = "manual_exact_url"
+        row.detail_fetch_mode = fetched.mode
+        row.detail_fetch_fallback_reason = fetched.fallback_reason
+        row.detail_http_status = fetched.http_status
+        row.detail_html_bytes = fetched.html_bytes
+        row.detail_blocked_signals = list(fetched.blocked_signals)
+        row.extraction_quality = adapter._extraction_quality(row)
         path_key = f"{platform}|manual_exact_url|exact"
         row.discovery_paths = [path_key]
         await api.send_coverage(scan_id, [CoverageRow(
@@ -65,6 +73,19 @@ async def run(
             path_key=path_key,
             status=f"ok:{mode}",
             result_count=1,
+            fetch_mode=fetched.mode, http_status=fetched.http_status, elapsed_ms=fetched.elapsed_ms,
+            html_bytes=fetched.html_bytes, text_chars=fetched.text_chars, anchor_count=fetched.anchor_count,
+            detail_link_count=fetched.detail_link_count, parsed_count=1, page_title=fetched.page_title,
+            content_hash=fetched.content_hash, blocked_signals=fetched.blocked_signals,
+            sample_detail_urls=fetched.sample_detail_urls, fallback_reason=fetched.fallback_reason,
+            parser_strategy="manual_exact_v06", final_url=fetched.final_url,
+            unmatched_listing_like_count=fetched.unmatched_listing_like_count,
+            sample_unmatched_listing_like_urls=fetched.sample_unmatched_listing_like_urls or [],
+            http_probe_html_bytes=fetched.http_probe_html_bytes, http_probe_text_chars=fetched.http_probe_text_chars,
+            http_probe_detail_link_count=fetched.http_probe_detail_link_count, http_probe_content_hash=fetched.http_probe_content_hash,
+            http_probe_blocked_signals=fetched.http_probe_blocked_signals or [], http_probe_final_url=fetched.http_probe_final_url,
+            http_probe_unmatched_listing_like_count=fetched.http_probe_unmatched_listing_like_count,
+            http_probe_sample_unmatched_listing_like_urls=fetched.http_probe_sample_unmatched_listing_like_urls or [],
         )])
         await api.send_listings(scan_id, [row])
         await api.finish_scan(scan_id, "ok", 1, 1, 1 if row.is_candidate else 0, 0, notes="manual exact URL")

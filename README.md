@@ -1,31 +1,48 @@
-# Genshin Market Tracker v0.5.0
+# Genshin Market Tracker v0.6.0
 
-Hybrid-System fuer hohe Markt-Abdeckung, identity-bound Verifikation, historische Preisvergleiche und kontinuierliche Qualitaetsverbesserung.
+Hybrid-System fuer hohe Markt-Abdeckung, identity-bound Verifikation, historische Preisvergleiche und eine messbare Verbesserungsschleife.
 
-## Was v0.5 wirklich hinzufuegt
+## Was v0.6 verbessert
 
-- **Historical Comparable Engine**: Historische Angebote bleiben getrennt vom Live-Markt und dienen als gewichtete Vergleichsanker.
-- **Status-Taxonomie**: `STRICT_LIVE`, `ACTIVE_UNCONFIRMED`, `SOLD_CONFIRMED`, `SOLD_CLAIMED`, `EXPIRED_REMOVED`, `OUTCOME_UNKNOWN`, `RISK_CONTAMINATED`.
-- **Konservative Entfernungserkennung**: Erst nach 3 Misses in jedem bekannten, erfolgreich erneut gescannten Suchpfad wird ein Listing als `EXPIRED_REMOVED` markiert. Ein Verschwinden wird niemals als Verkauf interpretiert.
-- **Verkaufs-Evidenz statt falscher Gewissheit**: `SOLD_CONFIRMED` bedeutet, dass die exakte Listing-Seite den Status verkauft/geschlossen zeigt. Es beweist nicht, dass der angezeigte Preis der tatsaechlich gezahlte Transaktionspreis war.
-- **Comparable Sets**: Vergleich nach Server, Waehrung, AR, C6/C6R1, Character-Signatur, Pull-Reserve, Living-History-, Discovery-, Resource- und Legacy-Profilen sowie Archetypen.
-- **Keine stille FX-Mischung**: EUR/USD/GBP werden nur innerhalb derselben Waehrung verglichen. Keine erfundene Wechselkurs-Praezision.
-- **Zeitgewichtung**: Historische Evidenz verliert mit dem Alter langsam Gewicht; alte seltene Legacy-Anker bleiben mit kleinem Mindestgewicht erhalten.
-- **Relisting-/Duplicate-Erkennung**: Fingerprints schlagen moegliche Wiederverkaeufe/Duplikate vor. Nichts wird automatisch zusammengefuehrt.
-- **Importierbare Historie**: Saubere historische Workbook-/Recherche-Anker koennen ueber `/v1/historical/import` in einen separaten Datensatz importiert werden.
-- **Quality Loop**: Nach Scans werden Qualitaets-Snapshots und konkrete Verbesserungssignale gespeichert (Seller-/Server-/Preis-Extraction, Zero-Hit-Queries, Historical-Pool, Source Errors, Duplicate Review usw.).
-- **Feedback Loop**: False Positives, False Negatives und Parserprobleme koennen ueber `/v1/review-feedback` dokumentiert und spaeter in Regressionstests uebernommen werden.
-- **Breitere Account-Signatur**: Nicht nur C6-Charaktere, sondern erkannte Charakter-Tags helfen bei Comparables und Duplicate-Vorschlaegen.
-- **Stündlicher Scan**: Ein Lauf pro Stunde, damit das Runtime-Budget in Pagination und Deep Verification fliesst.
+v0.6 konzentriert sich auf **Recall + Datenqualitaet + Diagnosefaehigkeit**. Ein Scan soll nicht nur Listings sammeln, sondern auch genug Informationen hinterlassen, um zu erkennen, *warum* eine Quelle oder ein Parser schlecht funktioniert.
 
-## Wichtigste Read-only Endpunkte
+- **Smarter HTTP -> Browser Fallback**: Eine grosse HTML-Seite gilt nicht mehr automatisch als erfolgreich. Wenn eine Indexseite 0 Listing-Links liefert, Challenge-Signale zeigt oder fast leer ist, wird normal per Playwright nachgeladen.
+- **HTTP-vs-Browser Telemetrie**: Der Scanner speichert getrennt, was die HTTP-Antwort zeigte und was nach Browser-Fallback sichtbar war.
+- **Pattern-Drift-Erkennung**: Listing-aehnliche URLs, die nicht zum konfigurierten Detail-Pattern passen, werden als Diagnose-Samples gespeichert. So fallen geaenderte Marktplatz-URLs schneller auf.
+- **Final-URL/Redirect-Diagnose**: Weiterleitungen und Shell-/Challenge-Seiten werden sichtbarer.
+- **Sicherere Karten-Grenzen**: Preis/C6/Seller sollen nicht mehr so leicht von einer benachbarten Listing-Karte uebernommen werden.
+- **Profil-basierte Seller-Erkennung**: Neben Text wie `Seller:` werden auch oeffentliche Store-/Member-/Profile-Links auf Karten und Detailseiten genutzt.
+- **Forum-Filter**: WTB/Buying/Searching-Threads auf EpicNPC/PlayerUp werden nicht als Verkaufsangebote behandelt.
+- **Adaptive Deep Verification**: Kandidaten werden priorisiert tief verifiziert; zusaetzlich werden bewusst Nicht-Kandidaten als Calibration Samples geprueft.
+- **Verification Events**: Jeder Deep-Verification-Versuch wird historisch protokolliert. Damit kann man spaeter pro Plattform messen, wie oft Identity-Verifikation wirklich klappt.
+- **Per-Platform Quality**: Preis-, Server-, Seller-, Availability-, Detail- und Identity-Quoten werden pro Plattform getrennt ausgewertet.
+- **Parser-/Fetch-Diagnostik**: Browser-Anteil, Fallback-Anteil, Block-Signale, Zero-Hit-Seiten, Parse-Yield, wiederholter identischer Content und Pattern-Misses werden gemessen.
+- **Quality Trends**: Qualitaetssnapshots koennen ueber mehrere Runs verglichen werden, inklusive Plattform-Trends.
+- **Taeglicher Quality Audit**: GitHub Actions fasst Qualitaet, Parserdiagnostik, Trends und Verification Performance zusammen.
+
+## Bereits aus v0.5 enthalten
+
+- Historical Comparable Engine mit getrennten Evidenzklassen
+- `SOLD_CONFIRMED`, `SOLD_CLAIMED`, `EXPIRED_REMOVED`, `OUTCOME_UNKNOWN`, `RISK_CONTAMINATED`
+- konservative 3-Miss-Entfernungserkennung
+- gewichteter Median / robuste historische Vergleiche
+- Relisting-/Duplicate-Fingerprints
+- Historical Import + manuelle Annotation
+- Feedback Loop fuer False Positives / False Negatives / Parserfehler
+- parallele Account-Archetypen statt einer einzigen Kategorie
+
+## Wichtige Read-only Endpunkte
 
 ```text
 /health
 /v1/candidates/recent?hours=24
 /v1/review-queue
 /v1/coverage/recent?hours=24
+/v1/coverage/diagnostics?hours=24
+/v1/coverage/diagnostics?hours=24&platform=PlayerAuctions
+/v1/verification/events?hours=24
 /v1/quality/recent?hours=24
+/v1/quality/trends?limit=20
 /v1/quality/snapshots?limit=20
 /v1/historical/recent?limit=100
 /v1/comparables?url=<URL-ENCODED-LISTING>&limit=30
@@ -34,26 +51,22 @@ Hybrid-System fuer hohe Markt-Abdeckung, identity-bound Verifikation, historisch
 /v1/feedback/summary?days=30
 ```
 
-## Schreib-Endpunkte (Bearer Token)
-
-```text
-POST /v1/historical/annotate
-POST /v1/historical/import
-POST /v1/review-feedback
-```
-
 ## Rollen im System
 
-- Collector = Recall + Triage + Evidenz sammeln.
-- D1 = Rohdaten, Snapshots, Statushistorie, historische Anker, Coverage, Feedback.
-- Comparable Engine = deskriptiver Marktvergleich, keine Kaufentscheidung.
-- ChatGPT/Human Review = tiefe Pruefung von Identitaet, Security, Seller, Relevanz und finaler Interpretation.
-- Excel = taeglicher Analyse-/Ranking-Output; nicht primaere Rohdatenbank.
+- **Collector** = Discovery, Recall, Triage und Messdaten sammeln.
+- **D1** = Listings, Snapshots, Coverage, Parserdiagnostik, Verification Events, Statushistorie und historische Anker.
+- **Comparable Engine** = deskriptiver Marktvergleich; kein Kaufentscheidungsautomat.
+- **ChatGPT/Human Review** = tiefe Pruefung von Identitaet, Seller, Security, persoenlicher Relevanz und auffaelligen Kandidaten.
+- **Excel** = gebuendelter Analyse-/Ranking-Output, nicht Primaerdatenbank.
 
-## Upgrade von deinem aktuellen Repo
+## Scan-Rhythmus
 
-Siehe **`docs/V05_UPGRADE_DE.md`**. Fuer deinen bestehenden D1 ist die eingetragene `database_id` bereits die bekannte `genshin-market` Datenbank; der Token wird nicht veraendert.
+Der normale GitHub-Scan laeuft einmal pro Stunde bei Minute 17. Das Runtime-Budget wird lieber fuer Browser-Fallback, Pagination und Deep Verification genutzt als fuer viele oberflaechliche Runs.
+
+## Upgrade
+
+Siehe [`docs/V06_UPGRADE_DE.md`](docs/V06_UPGRADE_DE.md).
 
 ## Grenzen
 
-Keine Garantie auf 100 % Markt-Abdeckung. Keine Umgehung von Login, CAPTCHA, Rate Limits oder Anti-Bot-Schutz. Marktplatz-HTML kann sich aendern. Historische Asking-Prices sind nicht automatisch tatsaechliche Settlement-Prices. Deshalb werden Evidenzstaerke, Datenqualitaet und Unsicherheit explizit gespeichert.
+Keine Garantie auf 100 % Marktabdeckung. Es werden keine Logins, CAPTCHAs, Rate Limits oder Anti-Bot-Schutzmechanismen umgangen. Wenn eine Quelle eine Challenge zeigt, versucht v0.6 nur normales oeffentliches Browser-Rendering und **misst/markiert** das Problem. Historische Asking Prices sind nicht automatisch Settlement Prices. Unsicherheit und Evidenzstaerke bleiben deshalb explizit.

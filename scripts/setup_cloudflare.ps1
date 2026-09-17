@@ -27,6 +27,9 @@ npx wrangler d1 execute genshin-market --remote --file=./migrations/0002_quality
 Write-Host "`n3c) Historical/Comparable-Erweiterung v0.5 einspielen..." -ForegroundColor Yellow
 npx wrangler d1 execute genshin-market --remote --file=./migrations/0003_historical_comparables.sql
 
+Write-Host "`n3d) Observability/Verification-Erweiterung v0.6 einspielen..." -ForegroundColor Yellow
+npx wrangler d1 execute genshin-market --remote --file=./migrations/0004_observability.sql
+
 $bytes = New-Object byte[] 32
 $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
 $rng.GetBytes($bytes)

@@ -1,12 +1,13 @@
-GENSHIN MARKET TRACKER v0.5.0
+Genshin Market Tracker v0.6.0 cumulative overlay
 
-This is a cumulative package: v0.1 infrastructure + v0.2 trust/quality improvements + v0.5 historical comparable engine.
+Copy all files in this archive over the existing Github-scanner repository and replace existing files.
+Do NOT delete the repository first; keep .git and .generated_ingest_token.txt.
 
-For the existing Github-scanner repository:
-1) Copy these files over the existing repo without deleting .git or .generated_ingest_token.txt.
-2) Commit and push.
-3) Run: .\scripts\deploy_v05.ps1
-4) Run GitHub Action: Quality checks
-5) Run GitHub Action: Genshin market scan
+GitHub Desktop summary:
+  Upgrade market tracker to v0.6.0
 
-See docs/V05_UPGRADE_DE.md.
+After push, run in PowerShell from the repo root:
+  Set-ExecutionPolicy -Scope Process Bypass
+  .\scripts\deploy_v06.ps1
+
+Then start a NEW Genshin market scan workflow run.
