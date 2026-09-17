@@ -101,6 +101,8 @@ function comparableSimilarity(a: AnyRow, b: AnyRow): number {
 }
 
 function recencyWeight(row: AnyRow): number {
+  // Imported tracker rows may have no trustworthy original listing date. Do not treat the import timestamp as market recency.
+  if (String(row.provenance || "").startsWith("tracker_historical_view") && String(row.notes || "").includes("date unavailable")) return 0.55;
   const raw = row.status_updated_at || row.observed_at || row.last_seen;
   if (!raw) return 0.65;
   const t = Date.parse(String(raw));
@@ -354,6 +356,47 @@ async function ensureV06Tables(env: Env) {
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_verification_events_reason_time ON verification_events(verification_reason, observed_at DESC)`).run();
 }
 
+
+async function ensureV07Tables(env: Env) {
+  await ensureV06Tables(env);
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS coverage_diagnostics_v07_extra (
+      scan_run_id TEXT NOT NULL, path_key TEXT NOT NULL, http_probe_http_status INTEGER,
+      safe_headers_json TEXT, http_probe_safe_headers_json TEXT,
+      browser_early_blocked INTEGER NOT NULL DEFAULT 0,
+      circuit_breaker_triggered INTEGER NOT NULL DEFAULT 0, circuit_breaker_reason TEXT,
+      PRIMARY KEY(scan_run_id, path_key),
+      FOREIGN KEY(scan_run_id) REFERENCES scan_runs(id) ON DELETE CASCADE
+    )
+  `).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_cov_diag_v07_breaker ON coverage_diagnostics_v07_extra(circuit_breaker_triggered, scan_run_id)`).run();
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS listing_field_provenance (
+      listing_id INTEGER PRIMARY KEY, updated_at TEXT NOT NULL, field_sources_json TEXT NOT NULL,
+      FOREIGN KEY(listing_id) REFERENCES listings(id) ON DELETE CASCADE
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS verification_provenance_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, scan_run_id TEXT NOT NULL, listing_id INTEGER NOT NULL,
+      platform TEXT NOT NULL, observed_at TEXT NOT NULL, verification_reason TEXT, field_sources_json TEXT NOT NULL,
+      FOREIGN KEY(scan_run_id) REFERENCES scan_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY(listing_id) REFERENCES listings(id) ON DELETE CASCADE
+    )
+  `).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_verification_prov_time ON verification_provenance_events(observed_at DESC)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_verification_prov_platform ON verification_provenance_events(platform, observed_at DESC)`).run();
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS source_health_state (
+      platform TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'unknown',
+      consecutive_blocked INTEGER NOT NULL DEFAULT 0, consecutive_zero_yield INTEGER NOT NULL DEFAULT 0,
+      last_success_at TEXT, last_blocked_at TEXT, last_probe_at TEXT, cooldown_until TEXT, last_reason TEXT,
+      updated_at TEXT NOT NULL
+    )
+  `).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_source_health_cooldown ON source_health_state(cooldown_until)`).run();
+}
+
 function synthPathKey(r: AnyRow): string {
   return String(r.path_key || `${r.platform}|${r.query_family}|${r.page_label || "seed"}`);
 }
@@ -470,6 +513,11 @@ async function upsertListing(env: Env, o: AnyRow, scanRunId: string) {
     o.detail_html_bytes ?? null, JSON.stringify(o.detail_blocked_signals ?? [])
   ).run();
 
+  await env.DB.prepare(`
+    INSERT INTO listing_field_provenance(listing_id,updated_at,field_sources_json) VALUES (?,?,?)
+    ON CONFLICT(listing_id) DO UPDATE SET updated_at=excluded.updated_at, field_sources_json=excluded.field_sources_json
+  `).bind(listingId, o.observed_at ?? nowIso(), JSON.stringify(o.field_sources ?? {})).run();
+
   // Keep every deep-verification attempt as an event, not only the latest state.
   // This allows us to measure candidate/calibration success rates and parser regressions over time.
   if (o.verification_reason || o.verification_level === "detail") {
@@ -483,6 +531,14 @@ async function upsertListing(env: Env, o: AnyRow, scanRunId: string) {
       o.detail_fetch_fallback_reason??null,o.detail_http_status??null,o.detail_html_bytes??null,
       JSON.stringify(o.detail_blocked_signals??[]),o.identity_verified?1:0,o.strict_live?1:0,
       o.extraction_quality??null,JSON.stringify(o.quality_flags??[])
+    ).run();
+    await env.DB.prepare(`
+      INSERT INTO verification_provenance_events(
+        scan_run_id,listing_id,platform,observed_at,verification_reason,field_sources_json
+      ) VALUES (?,?,?,?,?,?)
+    `).bind(
+      scanRunId,listingId,o.platform,o.observed_at??nowIso(),o.verification_reason??null,
+      JSON.stringify(o.field_sources??{})
     ).run();
   }
 
@@ -589,8 +645,67 @@ async function processDisappearance(env: Env, scanRunId: string) {
   return { successful_paths: successful.results.length, miss_updates: missUpdates, newly_expired: expiredCount };
 }
 
+
+async function updateSourceHealthFromScan(env: Env, scanRunId: string) {
+  await ensureV07Tables(env);
+  const rows = await env.DB.prepare(`
+    SELECT d.platform, COUNT(*) AS pages, SUM(COALESCE(d.parsed_count,0)) AS parsed,
+      SUM(CASE WHEN (d.blocked_signals_json IS NOT NULL AND d.blocked_signals_json<>'[]')
+        OR COALESCE(x.browser_early_blocked,0)=1 THEN 1 ELSE 0 END) AS blocked_pages,
+      SUM(CASE WHEN COALESCE(x.circuit_breaker_triggered,0)=1 THEN 1 ELSE 0 END) AS breaker_triggers
+    FROM coverage_diagnostics d
+    LEFT JOIN coverage_diagnostics_v07_extra x ON x.scan_run_id=d.scan_run_id AND x.path_key=d.path_key
+    WHERE d.scan_run_id=? GROUP BY d.platform
+  `).bind(scanRunId).all();
+
+  const updates: AnyRow[] = [];
+  for (const r of rows.results as AnyRow[]) {
+    const platform = String(r.platform);
+    const pages = Number(r.pages || 0), parsed = Number(r.parsed || 0), blockedPages = Number(r.blocked_pages || 0);
+    if (pages <= 0) continue;
+    const prev = await env.DB.prepare(`SELECT * FROM source_health_state WHERE platform=?`).bind(platform).first() as AnyRow | null;
+    let consecutiveBlocked = Number(prev?.consecutive_blocked || 0);
+    let consecutiveZero = Number(prev?.consecutive_zero_yield || 0);
+    let status = 'healthy', cooldownUntil: string | null = null, reason: string | null = null;
+    let lastSuccess = prev?.last_success_at ?? null, lastBlocked = prev?.last_blocked_at ?? null;
+    const now = nowIso();
+
+    if (parsed > 0) {
+      consecutiveBlocked = 0; consecutiveZero = 0; lastSuccess = now;
+      status = 'healthy'; reason = 'parsed_listings';
+    } else if (blockedPages > 0) {
+      consecutiveBlocked += 1; consecutiveZero = 0; lastBlocked = now;
+      reason = 'blocked_or_challenge_zero_yield';
+      if (consecutiveBlocked >= 2) {
+        status = 'cooldown';
+        cooldownUntil = new Date(Date.now() + 2 * 3600_000).toISOString();
+      } else status = 'degraded';
+    } else {
+      consecutiveZero += 1; consecutiveBlocked = 0;
+      reason = 'zero_yield_without_block_signal';
+      if (consecutiveZero >= 4) {
+        status = 'cooldown';
+        cooldownUntil = new Date(Date.now() + 3600_000).toISOString();
+      } else status = 'degraded';
+    }
+
+    await env.DB.prepare(`
+      INSERT INTO source_health_state(platform,status,consecutive_blocked,consecutive_zero_yield,last_success_at,
+        last_blocked_at,last_probe_at,cooldown_until,last_reason,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(platform) DO UPDATE SET status=excluded.status,consecutive_blocked=excluded.consecutive_blocked,
+        consecutive_zero_yield=excluded.consecutive_zero_yield,last_success_at=excluded.last_success_at,
+        last_blocked_at=excluded.last_blocked_at,last_probe_at=excluded.last_probe_at,cooldown_until=excluded.cooldown_until,
+        last_reason=excluded.last_reason,updated_at=excluded.updated_at
+    `).bind(platform,status,consecutiveBlocked,consecutiveZero,lastSuccess,lastBlocked,now,cooldownUntil,reason,now).run();
+    updates.push({ platform, status, pages, parsed, blocked_pages: blockedPages, consecutive_blocked: consecutiveBlocked,
+      consecutive_zero_yield: consecutiveZero, cooldown_until: cooldownUntil, reason });
+  }
+  return updates;
+}
+
 async function qualitySnapshot(env: Env, hours: number) {
-  await ensureV06Tables(env);
+  await ensureV07Tables(env);
   const since = new Date(Date.now() - hours * 3600_000).toISOString();
 
   const completeness = await env.DB.prepare(`
@@ -626,24 +741,29 @@ async function qualitySnapshot(env: Env, hours: number) {
   `).bind(since).all();
 
   const diagnostics = await env.DB.prepare(`
-    SELECT platform,
+    SELECT d.platform,
       COUNT(*) AS pages,
-      SUM(CASE WHEN fetch_mode='browser' THEN 1 ELSE 0 END) AS browser_pages,
-      SUM(CASE WHEN fallback_reason IS NOT NULL THEN 1 ELSE 0 END) AS fallback_pages,
-      SUM(CASE WHEN COALESCE(detail_link_count,0)=0 THEN 1 ELSE 0 END) AS zero_detail_pages,
-      SUM(CASE WHEN COALESCE(parsed_count,0)=0 THEN 1 ELSE 0 END) AS zero_parsed_pages,
-      SUM(CASE WHEN blocked_signals_json IS NOT NULL AND blocked_signals_json<>'[]' THEN 1 ELSE 0 END) AS blocked_pages,
-      SUM(CASE WHEN http_probe_blocked_signals_json IS NOT NULL AND http_probe_blocked_signals_json<>'[]' THEN 1 ELSE 0 END) AS http_probe_blocked_pages,
-      SUM(CASE WHEN http_probe_detail_link_count=0 AND fallback_reason IS NOT NULL THEN 1 ELSE 0 END) AS http_zero_link_fallbacks,
-      SUM(COALESCE(unmatched_listing_like_count,0)) AS unmatched_listing_like_links,
-      SUM(COALESCE(http_probe_unmatched_listing_like_count,0)) AS http_probe_unmatched_listing_like_links,
-      SUM(COALESCE(detail_link_count,0)) AS detail_links,
-      SUM(COALESCE(parsed_count,0)) AS parsed_rows,
-      AVG(elapsed_ms) AS avg_elapsed_ms,
-      COUNT(DISTINCT content_hash) AS unique_content_hashes,
-      COUNT(DISTINCT http_probe_content_hash) AS unique_http_probe_hashes
-    FROM coverage_diagnostics WHERE observed_at>=?
-    GROUP BY platform ORDER BY pages DESC
+      SUM(CASE WHEN d.fetch_mode='browser' THEN 1 ELSE 0 END) AS browser_pages,
+      SUM(CASE WHEN d.fallback_reason IS NOT NULL THEN 1 ELSE 0 END) AS fallback_pages,
+      SUM(CASE WHEN COALESCE(d.detail_link_count,0)=0 THEN 1 ELSE 0 END) AS zero_detail_pages,
+      SUM(CASE WHEN COALESCE(d.parsed_count,0)=0 THEN 1 ELSE 0 END) AS zero_parsed_pages,
+      SUM(CASE WHEN d.blocked_signals_json IS NOT NULL AND d.blocked_signals_json<>'[]' THEN 1 ELSE 0 END) AS blocked_pages,
+      SUM(CASE WHEN d.http_probe_blocked_signals_json IS NOT NULL AND d.http_probe_blocked_signals_json<>'[]' THEN 1 ELSE 0 END) AS http_probe_blocked_pages,
+      SUM(CASE WHEN d.http_probe_detail_link_count=0 AND d.fallback_reason IS NOT NULL THEN 1 ELSE 0 END) AS http_zero_link_fallbacks,
+      SUM(COALESCE(d.unmatched_listing_like_count,0)) AS unmatched_listing_like_links,
+      SUM(COALESCE(d.http_probe_unmatched_listing_like_count,0)) AS http_probe_unmatched_listing_like_links,
+      SUM(COALESCE(d.detail_link_count,0)) AS detail_links,
+      SUM(COALESCE(d.parsed_count,0)) AS parsed_rows,
+      AVG(d.elapsed_ms) AS avg_elapsed_ms,
+      COUNT(DISTINCT d.content_hash) AS unique_content_hashes,
+      COUNT(DISTINCT d.http_probe_content_hash) AS unique_http_probe_hashes,
+      SUM(CASE WHEN COALESCE(x.browser_early_blocked,0)=1 THEN 1 ELSE 0 END) AS browser_early_blocked_pages,
+      SUM(CASE WHEN COALESCE(x.circuit_breaker_triggered,0)=1 THEN 1 ELSE 0 END) AS circuit_breaker_triggers,
+      SUM(CASE WHEN x.http_probe_http_status IS NOT NULL THEN 1 ELSE 0 END) AS http_status_observed
+    FROM coverage_diagnostics d
+    LEFT JOIN coverage_diagnostics_v07_extra x ON x.scan_run_id=d.scan_run_id AND x.path_key=d.path_key
+    WHERE d.observed_at>=?
+    GROUP BY d.platform ORDER BY pages DESC
   `).bind(since).all();
 
   const repeatedContent = await env.DB.prepare(`
@@ -711,6 +831,29 @@ async function qualitySnapshot(env: Env, hours: number) {
     GROUP BY label ORDER BY n DESC
   `).bind(since).all();
 
+  const staleFlags = await env.DB.prepare(`
+    SELECT COUNT(*) AS n FROM listing_quality q JOIN listings l ON l.id=q.listing_id
+    WHERE l.last_seen>=? AND q.verification_level='detail' AND q.quality_flags_json LIKE '%not_detail_verified%'
+  `).bind(since).first();
+
+  const provenanceRows = await env.DB.prepare(`
+    SELECT l.platform,p.field_sources_json FROM listing_field_provenance p JOIN listings l ON l.id=p.listing_id
+    WHERE l.last_seen>=?
+  `).bind(since).all();
+  const fieldSourceUsage: AnyRow = {};
+  for (const r of provenanceRows.results as AnyRow[]) {
+    const platform = String(r.platform || 'Unknown');
+    fieldSourceUsage[platform] ||= {};
+    let fields: AnyRow = {};
+    try { fields = JSON.parse(String(r.field_sources_json || '{}')); } catch {}
+    for (const [field, source] of Object.entries(fields)) {
+      fieldSourceUsage[platform][field] ||= {};
+      const src = String(source || 'unknown');
+      fieldSourceUsage[platform][field][src] = Number(fieldSourceUsage[platform][field][src] || 0) + 1;
+    }
+  }
+
+  const sourceHealth = await env.DB.prepare(`SELECT * FROM source_health_state ORDER BY platform`).all();
   const n = Number(completeness?.n || 0);
   const pct = (v: any) => n ? Number((100 * Number(v || 0) / n).toFixed(1)) : 0;
   const suggestions: AnyRow[] = [];
@@ -750,6 +893,12 @@ async function qualitySnapshot(env: Env, hours: number) {
   const zeroHits = coverageRows.filter((r) => String(r.status).startsWith("ok:") && Number(r.results || 0) === 0);
   if (zeroHits.length >= 3) suggestions.push({ priority: "medium", code: "repeated_zero_hit_queries", message: "Several successful fetches produced zero listing URLs; verify detail URL patterns and marketplace markup." });
   if (Number(duplicateGroups?.n || 0) > 0) suggestions.push({ priority: "info", code: "duplicate_review_available", message: "Probable relisting/duplicate groups exist; review them before using historical counts as independent observations." });
+  if (Number(staleFlags?.n || 0) > 0) suggestions.push({ priority: "high", code: "stale_quality_flags", message: `${staleFlags?.n} detail-verified listing(s) still carry not_detail_verified; recompute derived flags.` });
+  for (const h of sourceHealth.results as AnyRow[]) {
+    if (String(h.status) === "cooldown") suggestions.push({ priority: "info", code: `source_cooldown:${h.platform}`, message: `${h.platform} is temporarily cooled down until ${h.cooldown_until}; this prevents repeated blocked requests.` });
+  }
+  const falseNeg = (feedback.results as AnyRow[]).find((x) => String(x.label) === "false_negative");
+  if (Number(falseNeg?.n || 0) > 0) suggestions.push({ priority: "high", code: "false_negatives_recorded", message: `${falseNeg?.n} false-negative review(s) were recorded in this window; add them to the benchmark corpus.` });
 
   return {
     since,
@@ -780,6 +929,9 @@ async function qualitySnapshot(env: Env, hours: number) {
     historical_pool: historical,
     probable_duplicate_groups: Number(duplicateGroups?.n || 0),
     feedback: feedback.results,
+    stale_quality_flag_count: Number(staleFlags?.n || 0),
+    field_source_usage: fieldSourceUsage,
+    source_health: sourceHealth.results,
     suggestions,
   };
 }
@@ -824,7 +976,7 @@ async function comparablesFor(env: Env, targetUrl: string, limit: number) {
       observed_at AS last_seen, limited_c6_count, c6r1_count, limited_pulls, history_richness,
       discovery_headroom, resource_richness, legacy_collector_value, archetypes_json, risk_hits,
       market_status, status_confidence, status_evidence, relisting_fingerprint,
-      limited_c6_characters_json, c6r1_characters_json, character_tags_json, source_key, provenance
+      limited_c6_characters_json, c6r1_characters_json, character_tags_json, source_key, provenance, notes
     FROM historical_offers
     WHERE price_value IS NOT NULL AND currency=? AND (? IS NULL OR server=? OR server IS NULL)
     ORDER BY observed_at DESC LIMIT 1200
@@ -909,9 +1061,15 @@ export default {
     if (request.method === "GET" && path === "/health") {
       await ensureV05Tables(env);
       const db = await env.DB.prepare("SELECT COUNT(*) AS n FROM listings").first();
-      const hist = await env.DB.prepare("SELECT COUNT(*) AS n FROM listing_market_meta WHERE market_status IN ('SOLD_CONFIRMED','SOLD_CLAIMED','EXPIRED_REMOVED','OUTCOME_UNKNOWN','RISK_CONTAMINATED')").first();
+      const hist = await env.DB.prepare(`
+        SELECT SUM(n) AS n FROM (
+          SELECT COUNT(*) AS n FROM listing_market_meta
+          WHERE market_status IN ('SOLD_CONFIRMED','SOLD_CLAIMED','EXPIRED_REMOVED','OUTCOME_UNKNOWN','RISK_CONTAMINATED')
+          UNION ALL SELECT COUNT(*) AS n FROM historical_offers
+        )
+      `).first();
       const last = await env.DB.prepare("SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT 1").first();
-      return json({ ok: true, version: "0.5", listing_count: db?.n ?? 0, historical_count: hist?.n ?? 0, last_scan: last ?? null, now: nowIso() });
+      return json({ ok: true, version: "0.7", listing_count: db?.n ?? 0, historical_count: hist?.n ?? 0, last_scan: last ?? null, now: nowIso() });
     }
 
     if (request.method === "GET" && path === "/v1/candidates/recent") {
@@ -972,33 +1130,39 @@ export default {
     }
 
     if (request.method === "GET" && path === "/v1/coverage/diagnostics") {
-      await ensureV06Tables(env);
+      await ensureV07Tables(env);
       const hours = Math.min(Math.max(Number(url.searchParams.get("hours") || "24"), 1), 168);
       const since = new Date(Date.now() - hours * 3600_000).toISOString();
       const platform = url.searchParams.get("platform");
       const result = await env.DB.prepare(`
-        SELECT scan_run_id,platform,path_key,observed_at,fetch_mode,http_status,elapsed_ms,html_bytes,text_chars,
-          anchor_count,detail_link_count,parsed_count,page_title,content_hash,blocked_signals_json,
-          sample_detail_urls_json,fallback_reason,parser_strategy,final_url,unmatched_listing_like_count,
-          sample_unmatched_listing_like_urls_json,http_probe_html_bytes,http_probe_text_chars,
-          http_probe_detail_link_count,http_probe_content_hash,http_probe_blocked_signals_json,
-          http_probe_final_url,http_probe_unmatched_listing_like_count,http_probe_sample_unmatched_listing_like_urls_json
-        FROM coverage_diagnostics WHERE observed_at>=? AND (? IS NULL OR platform=?)
-        ORDER BY observed_at DESC LIMIT 2000
+        SELECT d.scan_run_id,d.platform,d.path_key,d.observed_at,d.fetch_mode,d.http_status,d.elapsed_ms,d.html_bytes,d.text_chars,
+          d.anchor_count,d.detail_link_count,d.parsed_count,d.page_title,d.content_hash,d.blocked_signals_json,
+          d.sample_detail_urls_json,d.fallback_reason,d.parser_strategy,d.final_url,d.unmatched_listing_like_count,
+          d.sample_unmatched_listing_like_urls_json,d.http_probe_html_bytes,d.http_probe_text_chars,
+          d.http_probe_detail_link_count,d.http_probe_content_hash,d.http_probe_blocked_signals_json,
+          d.http_probe_final_url,d.http_probe_unmatched_listing_like_count,d.http_probe_sample_unmatched_listing_like_urls_json,
+          x.http_probe_http_status,x.safe_headers_json,x.http_probe_safe_headers_json,x.browser_early_blocked,
+          x.circuit_breaker_triggered,x.circuit_breaker_reason
+        FROM coverage_diagnostics d LEFT JOIN coverage_diagnostics_v07_extra x
+          ON x.scan_run_id=d.scan_run_id AND x.path_key=d.path_key
+        WHERE d.observed_at>=? AND (? IS NULL OR d.platform=?)
+        ORDER BY d.observed_at DESC LIMIT 2000
       `).bind(since, platform, platform).all();
       return json({ since, platform_filter: platform, count: result.results.length, diagnostics: result.results });
     }
 
     if (request.method === "GET" && path === "/v1/verification/events") {
-      await ensureV06Tables(env);
+      await ensureV07Tables(env);
       const hours = Math.min(Math.max(Number(url.searchParams.get("hours") || "24"), 1), 24 * 30);
       const since = new Date(Date.now() - hours * 3600_000).toISOString();
       const platform = url.searchParams.get("platform");
       const result = await env.DB.prepare(`
         SELECT e.id,e.scan_run_id,e.platform,e.observed_at,e.verification_reason,e.fetch_mode,e.fallback_reason,
           e.http_status,e.html_bytes,e.blocked_signals_json,e.identity_verified,e.strict_live,e.extraction_quality,
-          e.quality_flags_json,l.url,l.title,l.seller,l.server,l.price_value,l.currency
+          e.quality_flags_json,p.field_sources_json,l.url,l.title,l.seller,l.server,l.price_value,l.currency
         FROM verification_events e JOIN listings l ON l.id=e.listing_id
+        LEFT JOIN verification_provenance_events p ON p.scan_run_id=e.scan_run_id AND p.listing_id=e.listing_id
+          AND p.observed_at=e.observed_at
         WHERE e.observed_at>=? AND (? IS NULL OR e.platform=?)
         ORDER BY e.observed_at DESC LIMIT 2000
       `).bind(since,platform,platform).all();
@@ -1018,7 +1182,7 @@ export default {
     }
 
     if (request.method === "GET" && path === "/v1/quality/trends") {
-      await ensureV06Tables(env);
+      await ensureV07Tables(env);
       const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || "20"), 2), 100);
       const r = await env.DB.prepare("SELECT id,scan_run_id,created_at,metrics_json FROM quality_snapshots ORDER BY created_at DESC LIMIT ?").bind(limit).all();
       const points = (r.results as AnyRow[]).map((x) => {
@@ -1059,6 +1223,53 @@ export default {
         }
       }
       return json({ count: points.length, newest, oldest, delta, platform_delta: platformDelta, points });
+    }
+
+    if (request.method === "GET" && path === "/v1/source-health") {
+      await ensureV07Tables(env);
+      const r = await env.DB.prepare(`SELECT * FROM source_health_state ORDER BY platform`).all();
+      return json({ now: nowIso(), count: r.results.length, sources: r.results });
+    }
+
+    if (request.method === "GET" && path === "/v1/quality/by-version") {
+      await ensureV07Tables(env);
+      const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || "50"), 2), 200);
+      const r = await env.DB.prepare(`
+        SELECT id,created_at,code,message,details_json FROM system_events
+        WHERE component='collector' AND code LIKE 'SCAN_QUALITY_V%'
+        ORDER BY created_at DESC LIMIT ?
+      `).bind(limit).all();
+      const latestByVersion = new Map<string, AnyRow>();
+      const allPoints: AnyRow[] = [];
+      for (const row of r.results as AnyRow[]) {
+        let m: AnyRow = {}; try { m = JSON.parse(String(row.details_json || '{}')); } catch {}
+        const code = String(row.code || '');
+        const suffix = code.replace('SCAN_QUALITY_V','');
+        const version = suffix.length >= 2 ? `0.${Number(suffix)}` : suffix || 'unknown';
+        const c = m.completeness || {};
+        const point = {
+          collector_version: version, created_at: row.created_at, event_id: row.id,
+          listing_count: Number(m.listing_count || 0), candidate_count: Number(m.candidate_count || 0),
+          price_pct: c.price_pct ?? null, server_pct: c.server_pct ?? null, seller_pct: c.seller_pct ?? null,
+          availability_pct: c.availability_pct ?? null, detail_verified_pct: c.detail_verified_pct ?? null,
+          identity_verified_pct: c.identity_verified_pct ?? null, strict_live_pct: c.strict_live_pct ?? null,
+          avg_extraction_quality: c.avg_extraction_quality ?? null,
+          historical_anchor_observations: Number(m.historical_anchor_observations || 0),
+          requests_avoided: Number(m.requests_avoided || 0),
+          stale_quality_flag_count: Number(m.stale_quality_flag_count || 0),
+          improvement_signals: m.improvement_signals || [], platform_quality: m.platform_quality || {},
+          coverage_diagnostics: m.coverage_diagnostics || {},
+        };
+        allPoints.push(point);
+        if (!latestByVersion.has(version)) latestByVersion.set(version, point);
+      }
+      const versions = Array.from(latestByVersion.values());
+      const newest = versions[0] || null, previous = versions[1] || null;
+      const delta: AnyRow = {};
+      if (newest && previous) for (const k of ['listing_count','candidate_count','price_pct','server_pct','seller_pct','availability_pct','detail_verified_pct','identity_verified_pct','strict_live_pct','avg_extraction_quality','historical_anchor_observations','requests_avoided','stale_quality_flag_count']) {
+        const a=Number((newest as AnyRow)[k]),b=Number((previous as AnyRow)[k]); delta[k]=Number.isFinite(a)&&Number.isFinite(b)?Number((a-b).toFixed(2)):null;
+      }
+      return json({ source: 'exact_collector_scan_events', newest, previous, delta, versions, points: allPoints });
     }
 
     if (request.method === "GET" && path === "/v1/historical/recent") {
@@ -1162,7 +1373,7 @@ export default {
     }
 
     if (request.method === "POST" && path === "/v1/coverage/batch") {
-      await ensureV06Tables(env);
+      await ensureV07Tables(env);
       const body = await readJson<{ scan_run_id: string; rows: AnyRow[] }>(request);
       for (const r of body.rows) {
         await env.DB.prepare(`
@@ -1198,13 +1409,27 @@ export default {
             JSON.stringify(r.http_probe_blocked_signals??[]),r.http_probe_final_url??null,
             r.http_probe_unmatched_listing_like_count??null,JSON.stringify(r.http_probe_sample_unmatched_listing_like_urls??[])
           ).run();
+          await env.DB.prepare(`
+            INSERT INTO coverage_diagnostics_v07_extra(
+              scan_run_id,path_key,http_probe_http_status,safe_headers_json,http_probe_safe_headers_json,
+              browser_early_blocked,circuit_breaker_triggered,circuit_breaker_reason
+            ) VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(scan_run_id,path_key) DO UPDATE SET
+              http_probe_http_status=excluded.http_probe_http_status,safe_headers_json=excluded.safe_headers_json,
+              http_probe_safe_headers_json=excluded.http_probe_safe_headers_json,browser_early_blocked=excluded.browser_early_blocked,
+              circuit_breaker_triggered=excluded.circuit_breaker_triggered,circuit_breaker_reason=excluded.circuit_breaker_reason
+          `).bind(
+            body.scan_run_id,synthPathKey(r),r.http_probe_http_status??null,JSON.stringify(r.safe_headers??{}),
+            JSON.stringify(r.http_probe_safe_headers??{}),r.browser_early_blocked?1:0,r.circuit_breaker_triggered?1:0,
+            r.circuit_breaker_reason??null
+          ).run();
         }
       }
       return json({ ok: true, inserted: body.rows.length });
     }
 
     if (request.method === "POST" && path === "/v1/listings/batch") {
-      await ensureV06Tables(env);
+      await ensureV07Tables(env);
       const body = await readJson<{ scan_run_id: string; listings: AnyRow[] }>(request);
       let changed = 0;
       for (const observation of body.listings) {
@@ -1215,8 +1440,9 @@ export default {
     }
 
     if (request.method === "POST" && path === "/v1/scan/finish") {
-      await ensureV06Tables(env);
+      await ensureV07Tables(env);
       const body = await readJson<AnyRow>(request);
+      const sourceHealthUpdate = await updateSourceHealthFromScan(env, body.id);
       const disappearance = await processDisappearance(env, body.id);
       await env.DB.prepare(`
         UPDATE scan_runs SET finished_at=?,status=?,source_count=?,listing_count=?,candidate_count=?,error_count=?,notes=? WHERE id=?
@@ -1224,8 +1450,8 @@ export default {
         body.candidate_count||0,body.error_count||0,body.notes||null,body.id).run();
       const quality = await qualitySnapshot(env, 24);
       await env.DB.prepare(`INSERT INTO quality_snapshots(scan_run_id,created_at,metrics_json,suggestions_json) VALUES (?,?,?,?)`)
-        .bind(body.id, nowIso(), JSON.stringify({ ...quality, disappearance }), JSON.stringify((quality as any).suggestions || [])).run();
-      return json({ ok: true, disappearance, quality_suggestions: (quality as any).suggestions || [] });
+        .bind(body.id, nowIso(), JSON.stringify({ ...quality, disappearance, source_health_update: sourceHealthUpdate }), JSON.stringify((quality as any).suggestions || [])).run();
+      return json({ ok: true, disappearance, source_health_update: sourceHealthUpdate, quality_suggestions: (quality as any).suggestions || [] });
     }
 
     if (request.method === "POST" && path === "/v1/system-event") {

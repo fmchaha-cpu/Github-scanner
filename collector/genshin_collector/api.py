@@ -16,6 +16,15 @@ class MarketApi:
             r.raise_for_status()
             return r.json()
 
+    async def _get(self, path: str):
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            r = await client.get(f"{self.base_url}{path}")
+            r.raise_for_status()
+            return r.json()
+
+    async def get_source_health(self):
+        return await self._get("/v1/source-health")
+
     async def start_scan(self, scan_id: str, version: str, notes: str | None = None):
         return await self._post("/v1/scan/start", {
             "id": scan_id,

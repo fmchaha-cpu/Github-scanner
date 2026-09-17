@@ -28,6 +28,8 @@ jobs:
           trends = get('/v1/quality/trends?limit=14')
           diagnostics = get('/v1/coverage/diagnostics?hours=24')
           verification = get('/v1/verification/events?hours=24')
+          source_health = get('/v1/source-health')
+          by_version = get('/v1/quality/by-version?limit=40')
 
           print('QUALITY')
           print(json.dumps(quality, indent=2))
@@ -37,6 +39,10 @@ jobs:
           print(json.dumps(diagnostics, indent=2))
           print('VERIFICATION EVENTS')
           print(json.dumps(verification, indent=2))
+          print('SOURCE HEALTH')
+          print(json.dumps(source_health, indent=2))
+          print('QUALITY BY VERSION')
+          print(json.dumps(by_version, indent=2))
 
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
               f.write('# Genshin market quality audit\n\n')
@@ -97,6 +103,26 @@ jobs:
               f.write(
                   f"Seller **{delta.get('seller_pct')} pp**, server **{delta.get('server_pct')} pp**, "
                   f"identity **{delta.get('identity_verified_pct')} pp**, strict-live **{delta.get('strict_live_pct')} pp**\n\n"
+              )
+
+              f.write('## Source health / circuit breakers\n\n')
+              skipped_cb = sum(int(x.get('observations') or 0) for x in (quality.get('coverage') or []) if x.get('status') == 'skipped:circuit_breaker')
+              skipped_cd = sum(int(x.get('observations') or 0) for x in (quality.get('coverage') or []) if x.get('status') == 'skipped:cooldown')
+              f.write(f"Avoided fetch paths (24h): **{skipped_cb + skipped_cd}** — circuit breaker {skipped_cb}, cooldown {skipped_cd}.\n\n")
+              for h in source_health.get('sources') or []:
+                  f.write(
+                      f"- **{h.get('platform','?')}**: {h.get('status','unknown')}, "
+                      f"blocked streak {h.get('consecutive_blocked',0)}, zero-yield streak {h.get('consecutive_zero_yield',0)}, "
+                      f"cooldown until {h.get('cooldown_until') or 'none'}\n"
+                  )
+              f.write(f"\nStale derived quality flags: **{quality.get('stale_quality_flag_count', 0)}**\n\n")
+              version_delta = by_version.get('delta') or {}
+              f.write('## Latest version-to-version delta\n\n')
+              f.write(
+                  f"Seller **{version_delta.get('seller_pct')} pp**, server **{version_delta.get('server_pct')} pp**, "
+                  f"identity **{version_delta.get('identity_verified_pct')} pp**, "
+                  f"scan historical-anchor observations **{version_delta.get('historical_anchor_observations')}**, "
+                  f"avoided fetches **{version_delta.get('requests_avoided')}**\n\n"
               )
 
               f.write('## Suggestions\n')

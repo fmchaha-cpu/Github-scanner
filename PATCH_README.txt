@@ -1,13 +1,17 @@
-Genshin Market Tracker v0.6.0 cumulative overlay
+Genshin Market Tracker v0.7.0 cumulative overlay
 
-Copy all files in this archive over the existing Github-scanner repository and replace existing files.
-Do NOT delete the repository first; keep .git and .generated_ingest_token.txt.
+Copy the CONTENTS of this package over the existing Github-scanner repository.
+Do NOT delete the repository first and do NOT delete its hidden .git folder.
+Replace existing files when Windows asks.
 
 GitHub Desktop summary:
-  Upgrade market tracker to v0.6.0
+  Upgrade market tracker to v0.7.0
 
-After push, run in PowerShell from the repo root:
+Description:
+  Add source circuit breakers, persistent source-health cooldowns, field provenance, benchmark tests and historical comparable seeds.
+
+Then deploy Cloudflare from the repository root:
   Set-ExecutionPolicy -Scope Process Bypass
-  .\scripts\deploy_v06.ps1
+  .\scripts\deploy_v07.ps1
 
-Then start a NEW Genshin market scan workflow run.
+After deployment, run the GitHub Action "Import tracker historical seed" once, then start a NEW "Genshin market scan" run.

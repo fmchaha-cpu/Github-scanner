@@ -33,6 +33,10 @@ PROFILE_HREF_PATTERNS = (
     "/members/", "/member/", "/users/", "/user/", "/seller/", "/store/", "/profile/",
 )
 
+SAFE_HEADER_NAMES = (
+    "content-type", "server", "retry-after", "cf-mitigated", "x-cache", "x-served-by", "x-request-id",
+)
+
 
 @dataclass
 class FetchPage:
@@ -52,6 +56,7 @@ class FetchPage:
     unmatched_listing_like_count: int = 0
     sample_unmatched_listing_like_urls: list[str] | None = None
     fallback_reason: str | None = None
+    http_probe_http_status: int | None = None
     http_probe_html_bytes: int | None = None
     http_probe_text_chars: int | None = None
     http_probe_detail_link_count: int | None = None
@@ -60,6 +65,9 @@ class FetchPage:
     http_probe_final_url: str | None = None
     http_probe_unmatched_listing_like_count: int | None = None
     http_probe_sample_unmatched_listing_like_urls: list[str] | None = None
+    safe_headers: dict[str, str] | None = None
+    http_probe_safe_headers: dict[str, str] | None = None
+    browser_early_blocked: bool = False
 
 
 class GenericMarketplaceAdapter(SourceAdapter):
@@ -72,6 +80,10 @@ class GenericMarketplaceAdapter(SourceAdapter):
         deep_verify_limit: int = 8,
         deep_verify_hard_cap: int = 16,
         calibration_verify_sample: int = 2,
+        control_verify_sample: int = 1,
+        circuit_breaker_enabled: bool = True,
+        circuit_breaker_blocked_threshold: int = 1,
+        circuit_breaker_zero_yield_threshold: int = 4,
         favorite_characters: list[str] | None = None,
         rotation_value: int | None = None,
     ):
@@ -82,14 +94,38 @@ class GenericMarketplaceAdapter(SourceAdapter):
         self.deep_verify_limit = max(0, deep_verify_limit)
         self.deep_verify_hard_cap = max(self.deep_verify_limit, deep_verify_hard_cap)
         self.calibration_verify_sample = max(0, calibration_verify_sample)
+        self.control_verify_sample = max(0, control_verify_sample)
+        self.circuit_breaker_enabled = bool(circuit_breaker_enabled)
+        self.circuit_breaker_blocked_threshold = max(1, int(circuit_breaker_blocked_threshold))
+        self.circuit_breaker_zero_yield_threshold = max(2, int(circuit_breaker_zero_yield_threshold))
         self.favorite_characters = favorite_characters or []
         self.rotation_value = datetime.now(timezone.utc).hour if rotation_value is None else rotation_value
+        self._playwright = None
+        self._browser = None
+        self._context = None
 
     def _is_detail_url(self, url: str) -> bool:
         return any(p.search(url) for p in self.detail_patterns)
 
+    @staticmethod
+    def _safe_headers(headers) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for name in SAFE_HEADER_NAMES:
+            try:
+                value = headers.get(name)
+            except Exception:
+                value = None
+            if value:
+                out[name] = str(value)[:300]
+        return out
+
+    @staticmethod
+    def _quick_block_signals(html: str) -> list[str]:
+        low = (html or "").lower()[:120000]
+        return [name for name, terms in BLOCK_SIGNALS.items() if any(term in low for term in terms)]
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8), reraise=True)
-    async def _http_fetch(self, url: str) -> tuple[str, int, int, str]:
+    async def _http_fetch(self, url: str) -> tuple[str, int, int, str, dict[str, str]]:
         started = time.perf_counter()
         async with httpx.AsyncClient(
             headers={
@@ -100,28 +136,66 @@ class GenericMarketplaceAdapter(SourceAdapter):
             timeout=30,
             follow_redirects=True,
         ) as client:
+            # Keep HTTP error bodies/statuses for diagnostics instead of turning every 403/429
+            # into an opaque HTTPStatusError. Network/timeout failures still retry.
             r = await client.get(url)
-            r.raise_for_status()
             elapsed = int((time.perf_counter() - started) * 1000)
-            return r.text, r.status_code, elapsed, str(r.url)
+            return r.text, r.status_code, elapsed, str(r.url), self._safe_headers(r.headers)
 
-    async def _browser_fetch(self, url: str) -> tuple[str, int, str]:
+    async def _ensure_browser(self):
+        if self._context is not None:
+            return
         from playwright.async_api import async_playwright
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.launch(headless=True)
+        self._context = await self._browser.new_context(
+            user_agent=UA, viewport={"width": 1440, "height": 1200}, locale="en-US"
+        )
+
+    async def _close_browser(self):
+        try:
+            if self._context is not None:
+                await self._context.close()
+        finally:
+            self._context = None
+        try:
+            if self._browser is not None:
+                await self._browser.close()
+        finally:
+            self._browser = None
+        try:
+            if self._playwright is not None:
+                await self._playwright.stop()
+        finally:
+            self._playwright = None
+
+    async def _browser_fetch(self, url: str) -> tuple[str, int, str, int | None, dict[str, str], bool]:
+        await self._ensure_browser()
         started = time.perf_counter()
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page(user_agent=UA, viewport={"width": 1440, "height": 1200})
-            await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-            try:
-                await page.wait_for_load_state("networkidle", timeout=15_000)
-            except Exception:
-                pass
-            # A short settle helps marketplaces that hydrate cards immediately after DOMContentLoaded.
-            await page.wait_for_timeout(900)
+        page = await self._context.new_page()
+        response = None
+        early_blocked = False
+        try:
+            response = await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            # Challenge pages are often obvious immediately. Returning early avoids waiting
+            # ~15 seconds for a network-idle state that will never produce marketplace cards.
+            await page.wait_for_timeout(550)
             html = await page.content()
+            if self._quick_block_signals(html):
+                early_blocked = True
+            else:
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=8_000)
+                except Exception:
+                    pass
+                await page.wait_for_timeout(450)
+                html = await page.content()
             final_url = page.url
-            await browser.close()
-        return html, int((time.perf_counter() - started) * 1000), final_url
+            status = response.status if response is not None else None
+            headers = self._safe_headers(await response.all_headers()) if response is not None else {}
+        finally:
+            await page.close()
+        return html, int((time.perf_counter() - started) * 1000), final_url, status, headers, early_blocked
 
     def _looks_listing_like_url(self, href: str) -> bool:
         path = urlparse(href).path.lower()
@@ -134,7 +208,11 @@ class GenericMarketplaceAdapter(SourceAdapter):
             return "/item/" in path or "/listing/" in path or ("/genshin-impact/" in path and "/accounts/" in path)
         return any(token in path for token in ("/offer/", "/listing/", "/threads/"))
 
-    def _probe_html(self, url: str, html: str, mode: str, http_status: int | None, elapsed_ms: int, fallback_reason: str | None = None, final_url: str | None = None) -> FetchPage:
+    def _probe_html(
+        self, url: str, html: str, mode: str, http_status: int | None, elapsed_ms: int,
+        fallback_reason: str | None = None, final_url: str | None = None,
+        safe_headers: dict[str, str] | None = None, browser_early_blocked: bool = False,
+    ) -> FetchPage:
         soup = BeautifulSoup(html or "", "html.parser")
         text = clean_text(soup.get_text(" ", strip=True))
         low = (html or "").lower() + " " + text.lower()[:12000]
@@ -159,10 +237,13 @@ class GenericMarketplaceAdapter(SourceAdapter):
             blocked_signals=blocked, sample_detail_urls=detail_urls[:5], final_url=final_url or url,
             unmatched_listing_like_count=len(unmatched_listing_like),
             sample_unmatched_listing_like_urls=unmatched_listing_like[:5], fallback_reason=fallback_reason,
+            safe_headers=safe_headers or {}, browser_early_blocked=browser_early_blocked,
         )
 
     @staticmethod
     def _page_is_suspicious(probe: FetchPage, expect_listing_links: bool) -> tuple[bool, str | None]:
+        if probe.http_status is not None and probe.http_status >= 400:
+            return True, f"http_status:{probe.http_status}"
         if probe.blocked_signals:
             return True, "blocked_or_challenge:" + "+".join(probe.blocked_signals)
         if probe.html_bytes < 5000 or probe.text_chars < 800:
@@ -175,8 +256,11 @@ class GenericMarketplaceAdapter(SourceAdapter):
         http_probe: FetchPage | None = None
         http_error: str | None = None
         try:
-            html, status, elapsed, final_url = await self._http_fetch(url)
-            http_probe = self._probe_html(url, html, "http", status, elapsed, final_url=final_url)
+            html, status, elapsed, final_url, headers = await self._http_fetch(url)
+            http_probe = self._probe_html(
+                url, html, "http", status, elapsed, final_url=final_url, safe_headers=headers
+            )
+            http_probe.http_probe_http_status = http_probe.http_status
             http_probe.http_probe_html_bytes = http_probe.html_bytes
             http_probe.http_probe_text_chars = http_probe.text_chars
             http_probe.http_probe_detail_link_count = http_probe.detail_link_count
@@ -185,6 +269,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
             http_probe.http_probe_final_url = http_probe.final_url
             http_probe.http_probe_unmatched_listing_like_count = http_probe.unmatched_listing_like_count
             http_probe.http_probe_sample_unmatched_listing_like_urls = list(http_probe.sample_unmatched_listing_like_urls or [])
+            http_probe.http_probe_safe_headers = dict(http_probe.safe_headers or {})
             suspicious, reason = self._page_is_suspicious(http_probe, expect_listing_links)
             if not suspicious:
                 return http_probe
@@ -193,9 +278,13 @@ class GenericMarketplaceAdapter(SourceAdapter):
             http_error = f"http_error:{type(exc).__name__}"
 
         if self.use_browser_fallback:
-            html, elapsed, final_url = await self._browser_fetch(url)
-            browser_probe = self._probe_html(url, html, "browser", None, elapsed, fallback_reason=http_error, final_url=final_url)
+            html, elapsed, final_url, status, headers, early_blocked = await self._browser_fetch(url)
+            browser_probe = self._probe_html(
+                url, html, "browser", status, elapsed, fallback_reason=http_error, final_url=final_url,
+                safe_headers=headers, browser_early_blocked=early_blocked,
+            )
             if http_probe is not None:
+                browser_probe.http_probe_http_status = http_probe.http_status
                 browser_probe.http_probe_html_bytes = http_probe.html_bytes
                 browser_probe.http_probe_text_chars = http_probe.text_chars
                 browser_probe.http_probe_detail_link_count = http_probe.detail_link_count
@@ -204,6 +293,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
                 browser_probe.http_probe_final_url = http_probe.final_url
                 browser_probe.http_probe_unmatched_listing_like_count = http_probe.unmatched_listing_like_count
                 browser_probe.http_probe_sample_unmatched_listing_like_urls = list(http_probe.sample_unmatched_listing_like_urls or [])
+                browser_probe.http_probe_safe_headers = dict(http_probe.safe_headers or {})
             # If both paths are weak, still retain the richer page for diagnostics instead of hiding the failure.
             if http_probe and browser_probe.detail_link_count < http_probe.detail_link_count and not browser_probe.blocked_signals:
                 http_probe.fallback_reason = f"browser_worse:{http_error or 'unknown'}"
@@ -262,11 +352,13 @@ class GenericMarketplaceAdapter(SourceAdapter):
         path = urlparse(href).path.lower()
         return any(p in path for p in PROFILE_HREF_PATTERNS)
 
-    def _seller_from_card(self, node: Tag, base_url: str, detail_url: str, title: str) -> str | None:
+    def _seller_from_card_with_source(
+        self, node: Tag, base_url: str, detail_url: str, title: str
+    ) -> tuple[str | None, str | None]:
         text = clean_text(node.get_text(" ", strip=True))
         labeled = parse_seller(text)
         if labeled:
-            return labeled
+            return labeled, "card_text_label"
         banned = {"buy now", "tradeguardian", "trade guardian", "tg free", "next", "last", "selling", "buying"}
         title_low = title.lower()
         candidates: list[str] = []
@@ -280,7 +372,11 @@ class GenericMarketplaceAdapter(SourceAdapter):
                 continue
             if self._looks_like_profile_href(href) and re.fullmatch(r"[A-Za-z0-9_. -]{2,50}", label):
                 candidates.append(label)
-        return candidates[0] if candidates else None
+        return (candidates[0], "profile_link") if candidates else (None, None)
+
+    def _seller_from_card(self, node: Tag, base_url: str, detail_url: str, title: str) -> str | None:
+        seller, _source = self._seller_from_card_with_source(node, base_url, detail_url, title)
+        return seller
 
     def _skip_forum_non_sale(self, title: str) -> bool:
         if self.name.lower() not in {"epicnpc", "playerup"}:
@@ -337,14 +433,37 @@ class GenericMarketplaceAdapter(SourceAdapter):
                 continue
 
             price, currency = parse_price(text)
-            server = parse_server(title) or parse_server(text)
-            ar = parse_ar(title) or parse_ar(text)
-            seller = self._seller_from_card(node, base_url, href, title)
+            title_server = parse_server(title)
+            server = title_server or parse_server(text)
+            title_ar = parse_ar(title)
+            ar = title_ar or parse_ar(text)
+            seller, seller_source = self._seller_from_card_with_source(node, base_url, href, title)
             primos, intertwined, pulls = parse_resources(text)
             features = infer_features(text, self.favorite_characters)
             availability = parse_availability(text)
             instant = "instant" in text.lower() or "sofort" in text.lower()
             protection = self._protection(text)
+            external_id = infer_external_id(self.name, href, text)
+
+            field_sources: dict[str, str] = {"title": "anchor_text"}
+            if price is not None:
+                field_sources["price"] = "card_text"
+            if currency:
+                field_sources["currency"] = "card_text"
+            if server:
+                field_sources["server"] = "card_title" if title_server else "card_text"
+            if ar is not None:
+                field_sources["ar"] = "card_title" if title_ar is not None else "card_text"
+            if seller:
+                field_sources["seller"] = seller_source or "card_text"
+            if availability:
+                field_sources["availability"] = "card_text"
+            if external_id:
+                field_sources["external_id"] = "url"
+            if primos is not None or intertwined is not None or pulls is not None:
+                field_sources["resources"] = "card_text"
+            if features.get("limited_c6_count") or features.get("character_tags"):
+                field_sources["characters"] = "card_text"
 
             confidence = 66.0
             if server and price is not None:
@@ -353,12 +472,12 @@ class GenericMarketplaceAdapter(SourceAdapter):
                 confidence += 4
             if seller:
                 confidence += 6
-            if infer_external_id(self.name, href, text):
+            if external_id:
                 confidence += 3
 
             obs = ListingObservation(
                 platform=self.name,
-                external_id=infer_external_id(self.name, href, text),
+                external_id=external_id,
                 url=href,
                 title=title[:1000],
                 seller=seller,
@@ -377,7 +496,8 @@ class GenericMarketplaceAdapter(SourceAdapter):
                 intertwined=intertwined,
                 limited_pulls=pulls,
                 verification_level="card",
-                parser_strategy="anchor_local_v06",
+                parser_strategy="anchor_local_v07",
+                field_sources=field_sources,
                 **features,
             )
             obs.extraction_quality = self._extraction_quality(obs)
@@ -461,24 +581,55 @@ class GenericMarketplaceAdapter(SourceAdapter):
         card_seller = original.seller
         card_c6_count = original.limited_c6_count
 
+        # Verification-derived flags describe one detail fetch only. Clear stale flags before
+        # rebuilding them so later successful checks can actually improve the quality metrics.
+        transient_prefixes = (
+            "identity_mismatch:", "detail_missing_", "detail_weak_",
+            "detail_fetch_failed:", "deep_verify:",
+        )
+        original.quality_flags = [
+            f for f in original.quality_flags if not any(f.startswith(p) for p in transient_prefixes)
+        ]
+
         soup = BeautifulSoup(html, "html.parser")
         text = clean_text(soup.get_text(" ", strip=True))
         main_node = soup.find("main") or soup.find("article") or soup.body or soup
         main_text = clean_text(main_node.get_text(" ", strip=True))
         structured = self._structured_product(soup)
         h1 = soup.find("h1")
-        title = (
-            clean_text(h1.get_text(" ", strip=True)) if h1
-            else str(structured.get("title") or original.title)
-        )
+        if h1:
+            title = clean_text(h1.get_text(" ", strip=True))
+            title_source = "detail_h1"
+        elif structured.get("title"):
+            title = str(structured.get("title"))
+            title_source = "jsonld"
+        else:
+            title = original.title
+            title_source = original.field_sources.get("title", "card_fallback")
 
         parsed_price, parsed_currency = parse_price(main_text)
         structured_price = structured.get("price")
         price = structured_price if structured_price is not None else parsed_price
         currency = structured.get("currency", parsed_currency)
-        seller = str(structured.get("seller")) if structured.get("seller") else (parse_seller(main_text) or self._seller_from_card(main_node, original.url, original.url, title))
+
+        seller: str | None = None
+        seller_source: str | None = None
+        if structured.get("seller"):
+            seller = str(structured.get("seller"))
+            seller_source = "jsonld"
+        else:
+            labeled_seller = parse_seller(main_text)
+            if labeled_seller:
+                seller, seller_source = labeled_seller, "detail_text_label"
+            else:
+                seller, seller_source = self._seller_from_card_with_source(
+                    main_node, original.url, original.url, title
+                )
+                if seller_source == "profile_link":
+                    seller_source = "detail_profile_link"
 
         detail_server = parse_server(title)
+        server_source: str | None = "detail_title" if detail_server else None
         if not detail_server:
             m_server = re.search(
                 r"(?:server|region)\s*[:\-]?\s*(EU|Europe|European|NA|America|American|Asia|TW|HK|MO|Taiwan|Hong Kong)\b",
@@ -487,16 +638,19 @@ class GenericMarketplaceAdapter(SourceAdapter):
             )
             if m_server:
                 detail_server = parse_server(m_server.group(0))
+                server_source = "detail_labeled_text"
         server = detail_server or original.server
 
-        ar = parse_ar(f"{title} {main_text[:12000]}") or original.ar
+        detail_ar = parse_ar(f"{title} {main_text[:12000]}")
+        ar = detail_ar or original.ar
         primos, intertwined, pulls = parse_resources(f"{title} {main_text[:16000]}")
         features = infer_features(f"{title} {main_text[:16000]}", self.favorite_characters)
-        availability = (
-            str(structured.get("availability"))
-            if structured.get("availability")
-            else parse_availability(main_text)
-        )
+        if structured.get("availability"):
+            availability = str(structured.get("availability"))
+            availability_source = "jsonld"
+        else:
+            availability = parse_availability(main_text)
+            availability_source = "detail_text" if availability else None
         protection = self._protection(main_text) or original.after_sale_protection
 
         mismatches: list[str] = []
@@ -508,6 +662,27 @@ class GenericMarketplaceAdapter(SourceAdapter):
             mismatches.append("seller")
         if card_c6_count and features["limited_c6_count"] < card_c6_count:
             mismatches.append("c6")
+
+        field_sources = dict(original.field_sources)
+        field_sources["title"] = title_source
+        if price is not None:
+            field_sources["price"] = "jsonld" if structured_price is not None else "detail_text"
+        if currency:
+            field_sources["currency"] = "jsonld" if structured.get("currency") else "detail_text"
+        if seller:
+            field_sources["seller"] = seller_source or "detail_text"
+        if detail_server:
+            field_sources["server"] = server_source or "detail_text"
+        if detail_ar is not None:
+            field_sources["ar"] = "detail_text"
+        if primos is not None or intertwined is not None or pulls is not None:
+            field_sources["resources"] = "detail_text"
+        if features.get("limited_c6_count") or features.get("character_tags"):
+            field_sources["characters"] = "detail_text"
+        if availability:
+            field_sources["availability"] = availability_source or "detail_text"
+        if original.external_id:
+            field_sources.setdefault("external_id", "url")
 
         original.title = title[:1000] or original.title
         original.raw_text = text[:20000]
@@ -528,6 +703,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
         original.security_hint = security_hint(text, protection, bool(original.seller))
         original.verification_level = "detail"
         original.detail_verified_at = utcnow_iso()
+        original.field_sources = field_sources
 
         merit_evidence = bool(
             original.limited_c6_count
@@ -584,9 +760,11 @@ class GenericMarketplaceAdapter(SourceAdapter):
                 if not merit_evidence:
                     original.quality_flags.append("detail_missing_merit_evidence")
 
-        original.parser_strategy = "detail_structured_v06" if structured else "detail_text_v06"
-        original.extraction_quality = self._extraction_quality(original)
-        return self._finalize_market_meta(enrich_and_score(original))
+        original.parser_strategy = "detail_structured_v07" if structured else "detail_text_v07"
+        # enrich_and_score() also refreshes generic missing/not-detail flags.
+        verified = self._finalize_market_meta(enrich_and_score(original))
+        verified.extraction_quality = self._extraction_quality(verified)
+        return verified
 
     def _verification_plan(self, rows: list[ListingObservation]) -> list[tuple[ListingObservation, str]]:
         candidates = sorted(
@@ -594,23 +772,38 @@ class GenericMarketplaceAdapter(SourceAdapter):
             key=lambda r: (r.collector_priority, -(r.price_value or 10**9)),
             reverse=True,
         )
-        candidate_limit = min(len(candidates), self.deep_verify_hard_cap)
-        # Keep the configured base budget, but expand automatically when the source produces
-        # more promising candidates. Hard cap prevents one marketplace from consuming the run.
-        candidate_limit = min(self.deep_verify_hard_cap, max(self.deep_verify_limit, candidate_limit))
-        selected: list[tuple[ListingObservation, str]] = [(r, "candidate") for r in candidates[:candidate_limit]]
+        # Verify every candidate we can afford, but never exceed the per-source hard cap.
+        selected: list[tuple[ListingObservation, str]] = [
+            (r, "candidate") for r in candidates[: self.deep_verify_hard_cap]
+        ]
         selected_urls = {r.url for r, _ in selected}
+        remaining = max(0, self.deep_verify_hard_cap - len(selected))
 
-        # Calibrate on non-candidates too. Prefer rows with missing seller/availability and cheap EU rows;
-        # these samples expose false negatives and parser blind spots instead of only validating winners.
+        # Gap calibration deliberately targets incomplete cards. This measures whether detail pages
+        # can repair missing seller/server/availability instead of only validating already-good rows.
         calibration_pool = [r for r in rows if r.url not in selected_urls]
         calibration_pool.sort(key=lambda r: (
-            int(not r.seller) + int(not r.availability) + int(not r.server),
+            int(not r.seller) + int(not r.availability) + int(not r.server) + int(r.price_value is None),
             int(r.server == "EU" and (r.price_value or 10**9) <= 150),
             r.collector_priority,
         ), reverse=True)
-        for row in calibration_pool[: self.calibration_verify_sample]:
-            selected.append((row, "calibration"))
+        gap_n = min(self.calibration_verify_sample, remaining)
+        for row in calibration_pool[:gap_n]:
+            selected.append((row, "calibration_gap"))
+            selected_urls.add(row.url)
+        remaining = max(0, self.deep_verify_hard_cap - len(selected))
+
+        # A small complete-card control sample is crucial for false-negative measurement: if a
+        # non-candidate detail page reveals C6/history/resources that the card missed, we learn it.
+        control_pool = [
+            r for r in rows
+            if r.url not in selected_urls and r.price_value is not None and r.server and r.seller
+        ]
+        control_pool.sort(key=lambda r: sha256_text(r.url))  # deterministic across identical inputs
+        control_n = min(self.control_verify_sample, remaining)
+        for row in control_pool[:control_n]:
+            selected.append((row, "control"))
+
         return selected
 
     async def _deep_verify(self, rows: list[ListingObservation]) -> list[ListingObservation]:
@@ -655,131 +848,174 @@ class GenericMarketplaceAdapter(SourceAdapter):
         coverage: list[CoverageRow] = []
         errors: list[str] = []
         fetched_pages: set[str] = set()
+        breaker_active = False
+        breaker_reason: str | None = None
+        blocked_zero_streak = 0
+        zero_yield_streak = 0
 
-        for spec in self.scans:
-            url = spec["url"]
-            family = spec.get("family", "generic")
-            label = spec.get("label", url)
+        try:
+            for spec in self.scans:
+                url = spec["url"]
+                family = spec.get("family", "generic")
+                label = spec.get("label", url)
+                page_label_seed = spec.get("page_label", "seed")
 
-            if not self._rotation_active(spec):
-                coverage.append(CoverageRow(
-                    platform=self.name,
-                    query_family=family,
-                    query_text=label,
-                    page_label=spec.get("page_label", "seed"),
-                    path_key=self._path_key(self.name, family, url, spec.get("page_label", "seed")),
-                    status="skipped:rotation",
-                    result_count=0,
-                ))
-                continue
-
-            max_pages = max(1, min(int(spec.get("max_pages", 1)), 6))
-            queue: list[tuple[str, str]] = [(url, spec.get("page_label", "seed"))]
-            page_n = 0
-
-            while queue and page_n < max_pages:
-                page_url, page_label = queue.pop(0)
-                if page_url in fetched_pages:
-                    continue
-                fetched_pages.add(page_url)
-                page_n += 1
-
-                fetched: FetchPage | None = None
-                try:
-                    fetched = await self._fetch(page_url, expect_listing_links=True)
-                    rows = self._parse_cards(page_url, fetched.html)
-                    stable_page_label = page_label if page_n == 1 else f"auto-page-{page_n}"
-                    path_key = self._path_key(self.name, family, url, stable_page_label)
-                    for row in rows:
-                        if path_key not in row.discovery_paths:
-                            row.discovery_paths.append(path_key)
-                        previous = listings.get(row.url)
-                        if previous:
-                            row.discovery_paths = list(dict.fromkeys(previous.discovery_paths + row.discovery_paths))
-                            # Keep the richer extraction when duplicate search paths see the same URL.
-                            if (previous.data_confidence or 0) > (row.data_confidence or 0):
-                                previous.discovery_paths = row.discovery_paths
-                                row = previous
-                        listings[row.url] = row
+                if not self._rotation_active(spec):
                     coverage.append(CoverageRow(
-                        platform=self.name,
-                        query_family=family,
-                        query_text=label,
-                        page_label=stable_page_label,
-                        path_key=path_key,
-                        status=f"ok:{fetched.mode}",
-                        result_count=len(rows),
-                        fetch_mode=fetched.mode,
-                        http_status=fetched.http_status,
-                        elapsed_ms=fetched.elapsed_ms,
-                        html_bytes=fetched.html_bytes,
-                        text_chars=fetched.text_chars,
-                        anchor_count=fetched.anchor_count,
-                        detail_link_count=fetched.detail_link_count,
-                        parsed_count=len(rows),
-                        page_title=fetched.page_title,
-                        content_hash=fetched.content_hash,
-                        blocked_signals=fetched.blocked_signals,
-                        sample_detail_urls=fetched.sample_detail_urls,
-                        fallback_reason=fetched.fallback_reason,
-                        parser_strategy="anchor_local_v06",
-                        final_url=fetched.final_url,
-                        unmatched_listing_like_count=fetched.unmatched_listing_like_count,
-                        sample_unmatched_listing_like_urls=fetched.sample_unmatched_listing_like_urls or [],
-                        http_probe_html_bytes=fetched.http_probe_html_bytes,
-                        http_probe_text_chars=fetched.http_probe_text_chars,
-                        http_probe_detail_link_count=fetched.http_probe_detail_link_count,
-                        http_probe_content_hash=fetched.http_probe_content_hash,
-                        http_probe_blocked_signals=fetched.http_probe_blocked_signals or [],
-                        http_probe_final_url=fetched.http_probe_final_url,
-                        http_probe_unmatched_listing_like_count=fetched.http_probe_unmatched_listing_like_count,
-                        http_probe_sample_unmatched_listing_like_urls=fetched.http_probe_sample_unmatched_listing_like_urls or [],
+                        platform=self.name, query_family=family, query_text=label,
+                        page_label=page_label_seed,
+                        path_key=self._path_key(self.name, family, url, page_label_seed),
+                        status="skipped:rotation", result_count=0,
                     ))
+                    continue
 
-                    if page_n < max_pages:
-                        for href in self._pagination_links(page_url, fetched.html):
-                            if href not in fetched_pages and all(href != u for u, _ in queue):
-                                queue.append((href, f"auto-page-{page_n + 1}"))
-                except Exception as exc:
-                    msg = f"{self.name}:{family}:{page_url}: {type(exc).__name__}: {exc}"
-                    errors.append(msg)
-                    error_row = CoverageRow(
-                        platform=self.name,
-                        query_family=family,
-                        query_text=label,
-                        page_label=page_label,
-                        path_key=self._path_key(self.name, family, url, page_label),
-                        status="error",
-                        error=msg[:1000],
-                    )
-                    # Preserve fetch evidence even when parsing/pagination fails afterwards.
-                    if fetched is not None:
-                        error_row.fetch_mode = fetched.mode
-                        error_row.http_status = fetched.http_status
-                        error_row.elapsed_ms = fetched.elapsed_ms
-                        error_row.html_bytes = fetched.html_bytes
-                        error_row.text_chars = fetched.text_chars
-                        error_row.anchor_count = fetched.anchor_count
-                        error_row.detail_link_count = fetched.detail_link_count
-                        error_row.parsed_count = 0
-                        error_row.page_title = fetched.page_title
-                        error_row.content_hash = fetched.content_hash
-                        error_row.blocked_signals = list(fetched.blocked_signals)
-                        error_row.sample_detail_urls = list(fetched.sample_detail_urls)
-                        error_row.fallback_reason = fetched.fallback_reason
-                        error_row.parser_strategy = "anchor_local_v06"
-                        error_row.final_url = fetched.final_url
-                        error_row.unmatched_listing_like_count = fetched.unmatched_listing_like_count
-                        error_row.sample_unmatched_listing_like_urls = list(fetched.sample_unmatched_listing_like_urls or [])
-                        error_row.http_probe_html_bytes = fetched.http_probe_html_bytes
-                        error_row.http_probe_text_chars = fetched.http_probe_text_chars
-                        error_row.http_probe_detail_link_count = fetched.http_probe_detail_link_count
-                        error_row.http_probe_content_hash = fetched.http_probe_content_hash
-                        error_row.http_probe_blocked_signals = list(fetched.http_probe_blocked_signals or [])
-                        error_row.http_probe_final_url = fetched.http_probe_final_url
-                        error_row.http_probe_unmatched_listing_like_count = fetched.http_probe_unmatched_listing_like_count
-                        error_row.http_probe_sample_unmatched_listing_like_urls = list(fetched.http_probe_sample_unmatched_listing_like_urls or [])
-                    coverage.append(error_row)
+                if breaker_active:
+                    coverage.append(CoverageRow(
+                        platform=self.name, query_family=family, query_text=label,
+                        page_label=page_label_seed,
+                        path_key=self._path_key(self.name, family, url, page_label_seed),
+                        status="skipped:circuit_breaker", result_count=0,
+                        circuit_breaker_reason=breaker_reason,
+                    ))
+                    continue
+
+                max_pages = max(1, min(int(spec.get("max_pages", 1)), 6))
+                queue: list[tuple[str, str]] = [(url, page_label_seed)]
+                page_n = 0
+
+                while queue and page_n < max_pages and not breaker_active:
+                    page_url, page_label = queue.pop(0)
+                    if page_url in fetched_pages:
+                        continue
+                    fetched_pages.add(page_url)
+                    page_n += 1
+
+                    fetched: FetchPage | None = None
+                    try:
+                        fetched = await self._fetch(page_url, expect_listing_links=True)
+                        rows = self._parse_cards(page_url, fetched.html)
+                        stable_page_label = page_label if page_n == 1 else f"auto-page-{page_n}"
+                        path_key = self._path_key(self.name, family, url, stable_page_label)
+                        for row in rows:
+                            if path_key not in row.discovery_paths:
+                                row.discovery_paths.append(path_key)
+                            previous = listings.get(row.url)
+                            if previous:
+                                row.discovery_paths = list(dict.fromkeys(previous.discovery_paths + row.discovery_paths))
+                                if (previous.data_confidence or 0) > (row.data_confidence or 0):
+                                    previous.discovery_paths = row.discovery_paths
+                                    row = previous
+                            listings[row.url] = row
+
+                        blocked_zero = bool(
+                            len(rows) == 0
+                            and (fetched.detail_link_count or 0) == 0
+                            and (
+                                fetched.browser_early_blocked
+                                or bool(fetched.blocked_signals)
+                                or (fetched.http_status is not None and fetched.http_status in {401, 403, 429})
+                            )
+                        )
+                        if blocked_zero:
+                            blocked_zero_streak += 1
+                        elif rows:
+                            blocked_zero_streak = 0
+
+                        if len(rows) == 0 and (fetched.detail_link_count or 0) == 0 and not blocked_zero:
+                            zero_yield_streak += 1
+                        elif rows:
+                            zero_yield_streak = 0
+
+                        breaker_now = False
+                        if self.circuit_breaker_enabled:
+                            if blocked_zero_streak >= self.circuit_breaker_blocked_threshold:
+                                breaker_now = True
+                                breaker_reason = f"blocked_zero_yield:{'+'.join(fetched.blocked_signals) or fetched.http_status or 'challenge'}"
+                            elif zero_yield_streak >= self.circuit_breaker_zero_yield_threshold:
+                                breaker_now = True
+                                breaker_reason = f"repeated_zero_yield:{zero_yield_streak}"
+
+                        coverage_status = f"blocked:{fetched.mode}" if blocked_zero else f"ok:{fetched.mode}"
+                        coverage.append(CoverageRow(
+                            platform=self.name, query_family=family, query_text=label,
+                            page_label=stable_page_label, path_key=path_key,
+                            status=coverage_status, result_count=len(rows),
+                            fetch_mode=fetched.mode, http_status=fetched.http_status, elapsed_ms=fetched.elapsed_ms,
+                            html_bytes=fetched.html_bytes, text_chars=fetched.text_chars, anchor_count=fetched.anchor_count,
+                            detail_link_count=fetched.detail_link_count, parsed_count=len(rows), page_title=fetched.page_title,
+                            content_hash=fetched.content_hash, blocked_signals=fetched.blocked_signals,
+                            sample_detail_urls=fetched.sample_detail_urls, fallback_reason=fetched.fallback_reason,
+                            parser_strategy="anchor_local_v07", final_url=fetched.final_url,
+                            unmatched_listing_like_count=fetched.unmatched_listing_like_count,
+                            sample_unmatched_listing_like_urls=fetched.sample_unmatched_listing_like_urls or [],
+                            http_probe_http_status=fetched.http_probe_http_status,
+                            http_probe_html_bytes=fetched.http_probe_html_bytes,
+                            http_probe_text_chars=fetched.http_probe_text_chars,
+                            http_probe_detail_link_count=fetched.http_probe_detail_link_count,
+                            http_probe_content_hash=fetched.http_probe_content_hash,
+                            http_probe_blocked_signals=fetched.http_probe_blocked_signals or [],
+                            http_probe_final_url=fetched.http_probe_final_url,
+                            http_probe_unmatched_listing_like_count=fetched.http_probe_unmatched_listing_like_count,
+                            http_probe_sample_unmatched_listing_like_urls=fetched.http_probe_sample_unmatched_listing_like_urls or [],
+                            safe_headers=fetched.safe_headers or {},
+                            http_probe_safe_headers=fetched.http_probe_safe_headers or {},
+                            browser_early_blocked=fetched.browser_early_blocked,
+                            circuit_breaker_triggered=breaker_now,
+                            circuit_breaker_reason=breaker_reason if breaker_now else None,
+                        ))
+
+                        if breaker_now:
+                            breaker_active = True
+                            queue.clear()
+                            continue
+
+                        if page_n < max_pages:
+                            for href in self._pagination_links(page_url, fetched.html):
+                                if href not in fetched_pages and all(href != u for u, _ in queue):
+                                    queue.append((href, f"auto-page-{page_n + 1}"))
+                    except Exception as exc:
+                        msg = f"{self.name}:{family}:{page_url}: {type(exc).__name__}: {exc}"
+                        errors.append(msg)
+                        error_row = CoverageRow(
+                            platform=self.name, query_family=family, query_text=label, page_label=page_label,
+                            path_key=self._path_key(self.name, family, url, page_label),
+                            status="error", error=msg[:1000],
+                        )
+                        if fetched is not None:
+                            error_row.fetch_mode = fetched.mode
+                            error_row.http_status = fetched.http_status
+                            error_row.elapsed_ms = fetched.elapsed_ms
+                            error_row.html_bytes = fetched.html_bytes
+                            error_row.text_chars = fetched.text_chars
+                            error_row.anchor_count = fetched.anchor_count
+                            error_row.detail_link_count = fetched.detail_link_count
+                            error_row.parsed_count = 0
+                            error_row.page_title = fetched.page_title
+                            error_row.content_hash = fetched.content_hash
+                            error_row.blocked_signals = list(fetched.blocked_signals)
+                            error_row.sample_detail_urls = list(fetched.sample_detail_urls)
+                            error_row.fallback_reason = fetched.fallback_reason
+                            error_row.parser_strategy = "anchor_local_v07"
+                            error_row.final_url = fetched.final_url
+                            error_row.unmatched_listing_like_count = fetched.unmatched_listing_like_count
+                            error_row.sample_unmatched_listing_like_urls = list(fetched.sample_unmatched_listing_like_urls or [])
+                            error_row.http_probe_http_status = fetched.http_probe_http_status
+                            error_row.http_probe_html_bytes = fetched.http_probe_html_bytes
+                            error_row.http_probe_text_chars = fetched.http_probe_text_chars
+                            error_row.http_probe_detail_link_count = fetched.http_probe_detail_link_count
+                            error_row.http_probe_content_hash = fetched.http_probe_content_hash
+                            error_row.http_probe_blocked_signals = list(fetched.http_probe_blocked_signals or [])
+                            error_row.http_probe_final_url = fetched.http_probe_final_url
+                            error_row.http_probe_unmatched_listing_like_count = fetched.http_probe_unmatched_listing_like_count
+                            error_row.http_probe_sample_unmatched_listing_like_urls = list(fetched.http_probe_sample_unmatched_listing_like_urls or [])
+                            error_row.safe_headers = dict(fetched.safe_headers or {})
+                            error_row.http_probe_safe_headers = dict(fetched.http_probe_safe_headers or {})
+                            error_row.browser_early_blocked = fetched.browser_early_blocked
+                        coverage.append(error_row)
+        finally:
+            await self._close_browser()
 
         verified = await self._deep_verify(list(listings.values()))
+        # Deep verification may lazily open a browser after the index-session close above. Close it again.
+        await self._close_browser()
         return ScanResult(verified, coverage, errors)

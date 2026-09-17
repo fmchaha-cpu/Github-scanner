@@ -1,6 +1,6 @@
 [project]
 name = "genshin-market-collector"
-version = "0.6.0"
+version = "0.7.0"
 description = "Public marketplace collector, quality monitor, and anomaly detector for Genshin account listings"
 requires-python = ">=3.11"
 

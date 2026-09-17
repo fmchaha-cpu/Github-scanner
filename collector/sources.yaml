@@ -12,11 +12,15 @@ collector:
   deep_verify_limit_per_source: 6
   deep_verify_hard_cap_per_source: 16
   calibration_verify_sample_per_source: 2
+  control_verify_sample_per_source: 1
 
 sources:
   - name: PlayerAuctions
     enabled: true
     use_browser_fallback: true
+    circuit_breaker_enabled: true
+    circuit_breaker_blocked_threshold: 1
+    circuit_breaker_zero_yield_threshold: 4
     deep_verify_limit: 10
     deep_verify_hard_cap: 20
     calibration_verify_sample: 3
@@ -96,6 +100,9 @@ sources:
   - name: ZeusX
     enabled: true
     use_browser_fallback: true
+    circuit_breaker_enabled: true
+    circuit_breaker_blocked_threshold: 2
+    circuit_breaker_zero_yield_threshold: 4
     deep_verify_limit: 8
     calibration_verify_sample: 2
     detail_patterns:
@@ -111,6 +118,9 @@ sources:
   - name: EpicNPC
     enabled: true
     use_browser_fallback: true
+    circuit_breaker_enabled: true
+    circuit_breaker_blocked_threshold: 1
+    circuit_breaker_zero_yield_threshold: 3
     deep_verify_limit: 10
     calibration_verify_sample: 3
     detail_patterns:
@@ -125,6 +135,9 @@ sources:
   - name: PlayerUp
     enabled: true
     use_browser_fallback: true
+    circuit_breaker_enabled: true
+    circuit_breaker_blocked_threshold: 2
+    circuit_breaker_zero_yield_threshold: 4
     deep_verify_limit: 10
     calibration_verify_sample: 3
     detail_patterns:

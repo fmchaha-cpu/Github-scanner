@@ -179,10 +179,10 @@ def test_fetch_falls_back_to_browser_when_http_has_zero_listing_links():
     good = "<html><body><a href='/genshin-impact-account/123456a-x/'>EU AR55 Venti C6 $40</a>" + ('x ' * 3000) + '</body></html>'
 
     async def fake_http(url):
-        return weak, 200, 10, url
+        return weak, 200, 10, url, {"content-type": "text/html"}
 
     async def fake_browser(url):
-        return good, 50, url
+        return good, 50, url, 200, {"content-type": "text/html"}, False
 
     a._http_fetch = fake_http
     a._browser_fetch = fake_browser
@@ -207,7 +207,7 @@ def test_verification_plan_includes_calibration_samples():
     plan = a._verification_plan(rows)
     reasons = [reason for _, reason in plan]
     assert reasons.count('candidate') == 2
-    assert reasons.count('calibration') == 2
+    assert reasons.count('calibration_gap') == 2
 
 
 def test_probe_surfaces_unmatched_listing_like_urls_for_pattern_drift():
@@ -258,3 +258,34 @@ def test_scan_preserves_fetch_diagnostics_when_parser_raises():
     assert result.coverage[0].fetch_mode == 'browser'
     assert result.coverage[0].fallback_reason == 'zero_detail_links'
     assert result.coverage[0].http_probe_content_hash == 'def'
+
+
+def test_scan_circuit_breaker_stops_repeated_blocked_source_paths():
+    import asyncio
+    from genshin_collector.adapters.generic import FetchPage
+
+    scans = [
+        {'family': 'one', 'label': 'one', 'url': 'https://example.test/one'},
+        {'family': 'two', 'label': 'two', 'url': 'https://example.test/two'},
+        {'family': 'three', 'label': 'three', 'url': 'https://example.test/three'},
+    ]
+    a = GenericMarketplaceAdapter(
+        name='PlayerAuctions', scans=scans, detail_patterns=[r'/genshin-impact-account/\d+a'],
+        deep_verify_limit=0, circuit_breaker_enabled=True, circuit_breaker_blocked_threshold=1,
+    )
+    calls = []
+    async def fake_fetch(url, expect_listing_links=False):
+        calls.append(url)
+        return FetchPage(
+            html='<html><body>Just a moment... challenge-platform</body></html>', mode='browser',
+            http_status=403, elapsed_ms=700, html_bytes=2000, text_chars=40, anchor_count=0,
+            detail_link_count=0, page_title='Just a moment', content_hash='blocked',
+            blocked_signals=['challenge'], sample_detail_urls=[], final_url=url,
+            browser_early_blocked=True,
+        )
+    a._fetch = fake_fetch
+    result = asyncio.run(a.scan())
+    assert calls == ['https://example.test/one']
+    assert result.coverage[0].status == 'blocked:browser'
+    assert result.coverage[0].circuit_breaker_triggered is True
+    assert [r.status for r in result.coverage[1:]] == ['skipped:circuit_breaker', 'skipped:circuit_breaker']

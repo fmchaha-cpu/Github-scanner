@@ -1,0 +1,36 @@
+name: Import tracker historical seed
+
+on:
+  workflow_dispatch:
+
+jobs:
+  import-seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Import evidence-backed tracker history
+        env:
+          MARKET_API_URL: ${{ secrets.MARKET_API_URL }}
+          MARKET_API_TOKEN: ${{ secrets.MARKET_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib, urllib.request
+
+          base = os.environ['MARKET_API_URL'].rstrip('/')
+          token = os.environ['MARKET_API_TOKEN']
+          payload = json.loads(pathlib.Path('historical_seed_tracker_v26.json').read_text(encoding='utf-8'))
+          body = json.dumps(payload).encode('utf-8')
+          req = urllib.request.Request(
+              base + '/v1/historical/import', data=body, method='POST',
+              headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+          )
+          with urllib.request.urlopen(req, timeout=60) as r:
+              result = json.load(r)
+          print(json.dumps(result, indent=2))
+          if result.get('errors'):
+              raise SystemExit(f"Historical import returned errors: {result['errors']}")
+          print(f"Imported/upserted {result.get('imported', 0)} historical records")
+          PY

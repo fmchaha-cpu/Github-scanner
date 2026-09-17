@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from .models import ListingObservation
 
-DETECTOR_VERSION = "v2.5"
+DETECTOR_VERSION = "v2.6"
 
 
 def _cap(x: float) -> float:
@@ -80,7 +80,13 @@ def enrich_and_score(o: ListingObservation) -> ListingObservation:
     o.detector_version = DETECTOR_VERSION
     o.extraction_quality = _compute_extraction_quality(o)
 
-    flags = list(dict.fromkeys(o.quality_flags))
+    # Recompute state-derived flags from scratch so a successful detail check cannot
+    # leave stale card-stage warnings such as `not_detail_verified` or `missing_seller`.
+    derived_flags = {
+        "missing_price", "missing_server", "missing_seller", "missing_availability",
+        "risk_signal", "not_detail_verified",
+    }
+    flags = [f for f in dict.fromkeys(o.quality_flags) if f not in derived_flags]
     if o.price_value is None:
         flags.append("missing_price")
     if o.server is None:

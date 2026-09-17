@@ -1,24 +1,21 @@
-# Genshin Market Tracker v0.6.0
+# Genshin Market Tracker v0.7.0
 
 Hybrid-System fuer hohe Markt-Abdeckung, identity-bound Verifikation, historische Preisvergleiche und eine messbare Verbesserungsschleife.
 
-## Was v0.6 verbessert
+## Was v0.7 verbessert
 
-v0.6 konzentriert sich auf **Recall + Datenqualitaet + Diagnosefaehigkeit**. Ein Scan soll nicht nur Listings sammeln, sondern auch genug Informationen hinterlassen, um zu erkennen, *warum* eine Quelle oder ein Parser schlecht funktioniert.
+v0.7 baut auf der v0.6-Diagnostik auf und macht blockierte Quellen billiger, die Extraktion nachvollziehbarer und die Weiterentwicklung messbarer.
 
-- **Smarter HTTP -> Browser Fallback**: Eine grosse HTML-Seite gilt nicht mehr automatisch als erfolgreich. Wenn eine Indexseite 0 Listing-Links liefert, Challenge-Signale zeigt oder fast leer ist, wird normal per Playwright nachgeladen.
-- **HTTP-vs-Browser Telemetrie**: Der Scanner speichert getrennt, was die HTTP-Antwort zeigte und was nach Browser-Fallback sichtbar war.
-- **Pattern-Drift-Erkennung**: Listing-aehnliche URLs, die nicht zum konfigurierten Detail-Pattern passen, werden als Diagnose-Samples gespeichert. So fallen geaenderte Marktplatz-URLs schneller auf.
-- **Final-URL/Redirect-Diagnose**: Weiterleitungen und Shell-/Challenge-Seiten werden sichtbarer.
-- **Sicherere Karten-Grenzen**: Preis/C6/Seller sollen nicht mehr so leicht von einer benachbarten Listing-Karte uebernommen werden.
-- **Profil-basierte Seller-Erkennung**: Neben Text wie `Seller:` werden auch oeffentliche Store-/Member-/Profile-Links auf Karten und Detailseiten genutzt.
-- **Forum-Filter**: WTB/Buying/Searching-Threads auf EpicNPC/PlayerUp werden nicht als Verkaufsangebote behandelt.
-- **Adaptive Deep Verification**: Kandidaten werden priorisiert tief verifiziert; zusaetzlich werden bewusst Nicht-Kandidaten als Calibration Samples geprueft.
-- **Verification Events**: Jeder Deep-Verification-Versuch wird historisch protokolliert. Damit kann man spaeter pro Plattform messen, wie oft Identity-Verifikation wirklich klappt.
-- **Per-Platform Quality**: Preis-, Server-, Seller-, Availability-, Detail- und Identity-Quoten werden pro Plattform getrennt ausgewertet.
-- **Parser-/Fetch-Diagnostik**: Browser-Anteil, Fallback-Anteil, Block-Signale, Zero-Hit-Seiten, Parse-Yield, wiederholter identischer Content und Pattern-Misses werden gemessen.
-- **Quality Trends**: Qualitaetssnapshots koennen ueber mehrere Runs verglichen werden, inklusive Plattform-Trends.
-- **Taeglicher Quality Audit**: GitHub Actions fasst Qualitaet, Parserdiagnostik, Trends und Verification Performance zusammen.
+- **Circuit Breaker** stoppt eine Quelle innerhalb des Runs nach bestaetigtem Challenge/Zero-Yield statt viele identische Blockseiten zu laden.
+- **Persistente Source Health + Cooldown** verhindert wiederholte erfolglose Vollscans und sondiert spaeter automatisch erneut.
+- **Field Provenance** speichert, ob Werte aus Karte, Profil-Link, Detailtext, JSON-LD oder URL stammen.
+- **Calibration-Gap + Control Samples** pruefen neben Kandidaten auch gezielt unvollstaendige und scheinbar unauffaellige Listings.
+- **Known-case Benchmark Corpus** schuetzt bekannte wichtige Faelle vor Regressionen.
+- **Version-to-Version Quality** vergleicht exakte Collector-Scan-Metriken.
+- **Stale-Flag-Recompute** verhindert alte Kartenwarnungen nach erfolgreicher Detailpruefung.
+- **Historical Seed v26** bringt 17 preisbekannte, evidenzklassifizierte historische Tracker-Angebote in die Comparable Engine.
+
+Die v0.6-Features (Browser-Fallback, Seller/Profile-Erkennung, Parserdiagnostik, Verification Events, per-platform Quality) bleiben enthalten.
 
 ## Bereits aus v0.5 enthalten
 
@@ -43,6 +40,8 @@ v0.6 konzentriert sich auf **Recall + Datenqualitaet + Diagnosefaehigkeit**. Ein
 /v1/verification/events?hours=24
 /v1/quality/recent?hours=24
 /v1/quality/trends?limit=20
+/v1/quality/by-version?limit=50
+/v1/source-health
 /v1/quality/snapshots?limit=20
 /v1/historical/recent?limit=100
 /v1/comparables?url=<URL-ENCODED-LISTING>&limit=30
@@ -65,8 +64,8 @@ Der normale GitHub-Scan laeuft einmal pro Stunde bei Minute 17. Das Runtime-Budg
 
 ## Upgrade
 
-Siehe [`docs/V06_UPGRADE_DE.md`](docs/V06_UPGRADE_DE.md).
+Siehe [`docs/V07_UPGRADE_DE.md`](docs/V07_UPGRADE_DE.md).
 
 ## Grenzen
 
-Keine Garantie auf 100 % Marktabdeckung. Es werden keine Logins, CAPTCHAs, Rate Limits oder Anti-Bot-Schutzmechanismen umgangen. Wenn eine Quelle eine Challenge zeigt, versucht v0.6 nur normales oeffentliches Browser-Rendering und **misst/markiert** das Problem. Historische Asking Prices sind nicht automatisch Settlement Prices. Unsicherheit und Evidenzstaerke bleiben deshalb explizit.
+Keine Garantie auf 100 % Marktabdeckung. Es werden keine Logins, CAPTCHAs, Rate Limits oder Anti-Bot-Schutzmechanismen umgangen. Wenn eine Quelle eine Challenge zeigt, versucht v0.7 nur normales oeffentliches Browser-Rendering und **misst/markiert** das Problem. Historische Asking Prices sind nicht automatisch Settlement Prices. Unsicherheit und Evidenzstaerke bleiben deshalb explizit.

@@ -5,6 +5,7 @@ import asyncio
 import os
 import uuid
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
@@ -75,9 +76,24 @@ def _quality_metrics(rows, coverage, errors) -> dict:
         if r.parser_strategy:
             parser_strategies[r.parser_strategy] += 1
 
+    field_source_usage: dict[str, dict[str, dict[str, int]]] = {}
+    for r in rows:
+        platform_map = field_source_usage.setdefault(r.platform, {})
+        for field, source in (r.field_sources or {}).items():
+            source_counts = platform_map.setdefault(field, {})
+            source_counts[source] = source_counts.get(source, 0) + 1
+
+    stale_quality_flag_count = sum(
+        r.verification_level == "detail" and "not_detail_verified" in r.quality_flags for r in rows
+    )
+
     coverage_status = Counter(c.status for c in coverage)
     coverage_families = Counter(c.query_family for c in coverage if c.status.startswith("ok:"))
-    searched_rows = [c for c in coverage if c.status.startswith("ok:")]
+    avoided_fetches_by_platform = Counter(
+        c.platform for c in coverage if c.status in {"skipped:circuit_breaker", "skipped:cooldown"}
+    )
+    requests_avoided = sum(avoided_fetches_by_platform.values())
+    searched_rows = [c for c in coverage if c.status.startswith("ok:") or c.status.startswith("blocked:")]
     zero_hit_searches = [
         {
             "platform": c.platform, "family": c.query_family, "query": c.query_text,
@@ -87,7 +103,11 @@ def _quality_metrics(rows, coverage, errors) -> dict:
             "unmatched_listing_like_count": c.unmatched_listing_like_count,
             "sample_unmatched_listing_like_urls": c.sample_unmatched_listing_like_urls,
             "http_probe_detail_links": c.http_probe_detail_link_count,
+            "http_probe_http_status": c.http_probe_http_status,
             "http_probe_blocked_signals": c.http_probe_blocked_signals,
+            "browser_early_blocked": c.browser_early_blocked,
+            "circuit_breaker_triggered": c.circuit_breaker_triggered,
+            "circuit_breaker_reason": c.circuit_breaker_reason,
         }
         for c in searched_rows if c.result_count == 0
     ]
@@ -109,6 +129,10 @@ def _quality_metrics(rows, coverage, errors) -> dict:
         unmatched_listing_like = sum(int(c.unmatched_listing_like_count or 0) for c in pc)
         http_unmatched_listing_like = sum(int(c.http_probe_unmatched_listing_like_count or 0) for c in pc)
         redirected_http_pages = sum(bool(c.http_probe_final_url and c.final_url and c.http_probe_final_url != c.final_url) for c in pc)
+        early_blocked_pages = sum(bool(c.browser_early_blocked) for c in pc)
+        breaker_triggers = sum(bool(c.circuit_breaker_triggered) for c in pc)
+        http_statuses = Counter(str(c.http_probe_http_status) for c in pc if c.http_probe_http_status is not None)
+        final_statuses = Counter(str(c.http_status) for c in pc if c.http_status is not None)
         elapsed = [int(c.elapsed_ms) for c in pc if c.elapsed_ms is not None]
         hashes = [c.content_hash for c in pc if c.content_hash]
         for c in pc:
@@ -129,6 +153,10 @@ def _quality_metrics(rows, coverage, errors) -> dict:
             "unmatched_listing_like_links": unmatched_listing_like,
             "http_probe_unmatched_listing_like_links": http_unmatched_listing_like,
             "redirected_http_pages": redirected_http_pages,
+            "browser_early_blocked_pages": early_blocked_pages,
+            "circuit_breaker_triggers": breaker_triggers,
+            "http_probe_statuses": dict(http_statuses),
+            "final_statuses": dict(final_statuses),
             "detail_links": detail_links,
             "parsed_rows": parsed,
             "parse_yield_pct": _pct(parsed, detail_links) if detail_links else 0.0,
@@ -188,8 +216,12 @@ def _quality_metrics(rows, coverage, errors) -> dict:
         improvement_signals.append("historical_comparable_pool_still_small")
     if n and sum(bool(r.relisting_fingerprint) for r in rows) / n < 0.95:
         improvement_signals.append("relisting_fingerprint_coverage_low")
-    if n and verification_reasons.get("calibration", 0) == 0:
-        improvement_signals.append("no_calibration_sample_verified")
+    if n and verification_reasons.get("calibration_gap", 0) == 0:
+        improvement_signals.append("no_calibration_gap_sample_verified")
+    if n and verification_reasons.get("control", 0) == 0:
+        improvement_signals.append("no_control_sample_verified")
+    if stale_quality_flag_count:
+        improvement_signals.append("stale_quality_flags_detected")
 
     for platform, d in coverage_diagnostics.items():
         if d["pages"] >= 1 and d["parsed_rows"] == 0:
@@ -200,6 +232,8 @@ def _quality_metrics(rows, coverage, errors) -> dict:
             improvement_signals.append(f"detail_pattern_drift_suspected:{platform}")
         if d["http_probe_blocked_pages"] > 0:
             improvement_signals.append(f"http_probe_blocked:{platform}")
+        if d.get("circuit_breaker_triggers", 0) > 0:
+            improvement_signals.append(f"circuit_breaker_triggered:{platform}")
     for platform, pq in platform_quality.items():
         if pq.get("seller_pct", 100) < 40 and pq.get("listings", 0) >= 5:
             improvement_signals.append(f"seller_extraction_low:{platform}")
@@ -220,11 +254,15 @@ def _quality_metrics(rows, coverage, errors) -> dict:
         "coverage_diagnostics": coverage_diagnostics,
         "verification_reasons": dict(verification_reasons),
         "parser_strategies": dict(parser_strategies),
+        "field_source_usage": field_source_usage,
+        "stale_quality_flag_count": stale_quality_flag_count,
         "top_reasons": reasons.most_common(15),
         "top_quality_flags": quality_flags.most_common(20),
         "risk_flags": dict(risk_flags),
         "coverage_status": dict(coverage_status),
         "coverage_families": dict(coverage_families),
+        "requests_avoided": requests_avoided,
+        "avoided_fetches_by_platform": dict(avoided_fetches_by_platform),
         "zero_hit_searches": zero_hit_searches[:40],
         "repeated_content_groups": repeated_content[:20],
         "repeated_http_probe_content_groups": repeated_http_content[:20],
@@ -249,10 +287,19 @@ async def run(config_path: str):
     deep_verify_limit = int(collector_cfg.get("deep_verify_limit_per_source", 8))
     deep_verify_hard_cap = int(collector_cfg.get("deep_verify_hard_cap_per_source", 16))
     calibration_verify_sample = int(collector_cfg.get("calibration_verify_sample_per_source", 2))
+    control_verify_sample = int(collector_cfg.get("control_verify_sample_per_source", 1))
 
     scan_id = str(uuid.uuid4())
     api = MarketApi(api_url, api_token)
-    await api.start_scan(scan_id, __version__, notes="scheduled collector v0.6 observability+adaptive-verification+history")
+    await api.start_scan(scan_id, __version__, notes="scheduled collector v0.7 source-health+provenance+benchmarks")
+
+    try:
+        source_health_payload = await api.get_source_health()
+        source_health_rows = source_health_payload.get("sources", source_health_payload.get("rows", [])) if isinstance(source_health_payload, dict) else []
+    except Exception:
+        # Source-health is an optimization only. A temporary API/read failure must never stop scanning.
+        source_health_rows = []
+    source_health = {str(r.get("platform")): r for r in source_health_rows if isinstance(r, dict) and r.get("platform")}
 
     all_listings = {}
     all_coverage = []
@@ -273,6 +320,25 @@ async def run(config_path: str):
                     result_count=0,
                 ))
                 continue
+
+            platform_name = source.get("name", "Unknown")
+            health = source_health.get(platform_name) or {}
+            cooldown_until = health.get("cooldown_until")
+            cooldown_active = False
+            if cooldown_until:
+                try:
+                    cooldown_active = datetime.fromisoformat(str(cooldown_until).replace("Z", "+00:00")) > datetime.now(timezone.utc)
+                except Exception:
+                    cooldown_active = False
+            if cooldown_active:
+                all_coverage.append(CoverageRow(
+                    platform=platform_name, query_family="source_health_cooldown",
+                    query_text="source temporarily cooled down after repeated blocked/zero-yield probes",
+                    page_label="n/a", path_key=f"{platform_name}|cooldown", status="skipped:cooldown",
+                    result_count=0, circuit_breaker_reason=str(health.get("last_reason") or "persistent_source_health_cooldown"),
+                ))
+                continue
+
             source_count += 1
             adapter = GenericMarketplaceAdapter(
                 name=source["name"],
@@ -282,6 +348,10 @@ async def run(config_path: str):
                 deep_verify_limit=int(source.get("deep_verify_limit", deep_verify_limit)),
                 deep_verify_hard_cap=int(source.get("deep_verify_hard_cap", deep_verify_hard_cap)),
                 calibration_verify_sample=int(source.get("calibration_verify_sample", calibration_verify_sample)),
+                control_verify_sample=int(source.get("control_verify_sample", control_verify_sample)),
+                circuit_breaker_enabled=bool(source.get("circuit_breaker_enabled", True)),
+                circuit_breaker_blocked_threshold=int(source.get("circuit_breaker_blocked_threshold", 1)),
+                circuit_breaker_zero_yield_threshold=int(source.get("circuit_breaker_zero_yield_threshold", 4)),
                 favorite_characters=favorite_characters,
             )
             result = await adapter.scan()
@@ -308,7 +378,7 @@ async def run(config_path: str):
         await api.send_system_event(
             component="collector",
             severity=severity,
-            code="SCAN_QUALITY_V06",
+            code="SCAN_QUALITY_V07",
             message=(
                 f"scan {scan_id}: {len(rows)} listings, {candidates} candidates, "
                 f"{metrics['identity_verified_count']} identity-verified, {len(all_errors)} errors"
@@ -338,7 +408,7 @@ async def run(config_path: str):
             await api.send_system_event(
                 component="collector",
                 severity="error",
-                code="SCAN_FAILED_V06",
+                code="SCAN_FAILED_V07",
                 message=str(exc),
                 details_json={"scan_id": scan_id, "errors": all_errors[:10]},
             )

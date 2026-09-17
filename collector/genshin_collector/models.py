@@ -73,6 +73,8 @@ class ListingObservation(BaseModel):
     detail_http_status: Optional[int] = None
     detail_html_bytes: Optional[int] = None
     detail_blocked_signals: list[str] = Field(default_factory=list)
+    # v0.7 provenance map: where each extracted field came from (card text, title, JSON-LD, profile link, etc.).
+    field_sources: dict[str, str] = Field(default_factory=dict)
 
     # v0.5 market-history / comparable metadata. These are evidence labels,
     # never guarantees that a transaction actually settled at the listed price.
@@ -87,7 +89,7 @@ class ListingObservation(BaseModel):
     is_candidate: bool = False
     # Means "eligible for human/ChatGPT deep review", never an autonomous buy alert.
     is_alert_candidate: bool = False
-    detector_version: str = "v0.6"
+    detector_version: str = "v0.7"
 
 
 class CoverageRow(BaseModel):
@@ -119,6 +121,7 @@ class CoverageRow(BaseModel):
     final_url: Optional[str] = None
     unmatched_listing_like_count: Optional[int] = None
     sample_unmatched_listing_like_urls: list[str] = Field(default_factory=list)
+    http_probe_http_status: Optional[int] = None
     http_probe_html_bytes: Optional[int] = None
     http_probe_text_chars: Optional[int] = None
     http_probe_detail_link_count: Optional[int] = None
@@ -127,3 +130,8 @@ class CoverageRow(BaseModel):
     http_probe_final_url: Optional[str] = None
     http_probe_unmatched_listing_like_count: Optional[int] = None
     http_probe_sample_unmatched_listing_like_urls: list[str] = Field(default_factory=list)
+    safe_headers: dict[str, str] = Field(default_factory=dict)
+    http_probe_safe_headers: dict[str, str] = Field(default_factory=dict)
+    browser_early_blocked: bool = False
+    circuit_breaker_triggered: bool = False
+    circuit_breaker_reason: Optional[str] = None
