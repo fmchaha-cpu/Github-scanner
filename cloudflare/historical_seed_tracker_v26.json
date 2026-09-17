@@ -1,0 +1,677 @@
+{
+  "records": [
+    {
+      "source_key": "tracker-v26:HIST-W-001",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "PlayerUp",
+      "url": "https://www.playerup.com/threads/eu-week-1-account-100k-primogems-1000-wishes-c6r1-furina-ayaka-c6-nahida-c4r1-xilonen-c3r1.6400887/",
+      "title": "HIST-W-001 | C6R1 Furina, C6R1 Ayaka, C6 Nahida, C4R1 Xilonen, C3R1 unit; 100K+ Primogems",
+      "seller": "Lakshay19",
+      "server": "EU",
+      "ar": null,
+      "price_value": 199.0,
+      "currency": "USD",
+      "market_status": "RISK_CONTAMINATED",
+      "status_confidence": 0.9,
+      "status_evidence": "Sold; seller later suspended",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 3,
+      "c6r1_count": 2,
+      "limited_pulls": 625.0,
+      "history_richness": null,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Value C6 / Collector",
+        "Resource Rich / Wish Heavy"
+      ],
+      "limited_c6_characters": [
+        "Ayaka",
+        "Nahida",
+        "Furina"
+      ],
+      "c6r1_characters": [
+        "Ayaka",
+        "Furina"
+      ],
+      "character_tags": [
+        "Ayaka",
+        "Nahida",
+        "Furina",
+        "Xilonen"
+      ],
+      "risk_hits": 1,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Kronjuwel; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence. Seller-later-suspended evidence makes this a risk-contaminated outlier, not a clean price anchor."
+    },
+    {
+      "source_key": "tracker-v26:HIST-B-001",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "ZeusX",
+      "url": "https://zeusx.com/game/genshin-impact/13/accounts/discount-mavuika-c6-signature-weapon-mona-keqing-tighnari-any-platform-email-linked-lumine-boosted-ar-56-22449119",
+      "title": "HIST-B-001 | Mavuika C6 + signature; Mona, Keqing, Tighnari",
+      "seller": "Mr.Bazooka",
+      "server": "EU",
+      "ar": 56,
+      "price_value": 204.0,
+      "currency": "USD",
+      "market_status": "EXPIRED_REMOVED",
+      "status_confidence": 0.9,
+      "status_evidence": "Gone / 410",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 1,
+      "c6r1_count": 0,
+      "limited_pulls": 0.0,
+      "history_richness": null,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Value C6 / Collector"
+      ],
+      "limited_c6_characters": [
+        "Mavuika"
+      ],
+      "c6r1_characters": [],
+      "character_tags": [
+        "Mavuika"
+      ],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Selten; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-W-008",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "EpicNPC",
+      "url": "https://www.epicnpc.com/threads/euw-ar-58-c6r1-raiden-c4r5-cyno-c4r2-hu-tao-c2-yelan-rush-selling.2958843/",
+      "title": "HIST-W-008 | Raiden C6R1; Cyno C4R5; Hu Tao C4R2; Yelan C2; Zhongli C2; Ganyu C1; Kazuha; Furina; large unfarmed Fontaine/Natlan/Chenyu.",
+      "seller": "Narumi",
+      "server": "EU",
+      "ar": 58,
+      "price_value": 50.0,
+      "currency": "USD",
+      "market_status": "SOLD_CONFIRMED",
+      "status_confidence": 0.95,
+      "status_evidence": "Sold via Trade Guardian",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 1,
+      "c6r1_count": 1,
+      "limited_pulls": null,
+      "history_richness": null,
+      "discovery_headroom": 70.0,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Value C6 / Collector"
+      ],
+      "limited_c6_characters": [
+        "Raiden"
+      ],
+      "c6r1_characters": [
+        "Raiden"
+      ],
+      "character_tags": [
+        "Zhongli",
+        "Ganyu",
+        "Hu Tao",
+        "Kazuha",
+        "Raiden",
+        "Yelan",
+        "Cyno",
+        "Furina"
+      ],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Kronjuwel; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-W-009",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "EpicNPC",
+      "url": "https://www.epicnpc.com/threads/ar60-whale-genshin-eu-c6-arle-bis-c6-yelan-bis-c6-neuv-bis-c0-xilo-etc.2890900/",
+      "title": "HIST-W-009 | Arlecchino C6R1; Yelan C6R1; Neuvillette C6R1; Kazuha, Kinich R1, Zhongli, Venti, Ayaka R1, Yae R1, Raiden R1, Alhaitham, Yoimiya, Klee, Xilonen.",
+      "seller": "ToasyQ14",
+      "server": "EU",
+      "ar": 60,
+      "price_value": 510.0,
+      "currency": "USD",
+      "market_status": "SOLD_CONFIRMED",
+      "status_confidence": 0.95,
+      "status_evidence": "Sold via Trade Guardian",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 3,
+      "c6r1_count": 3,
+      "limited_pulls": null,
+      "history_richness": null,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Value C6 / Collector"
+      ],
+      "limited_c6_characters": [
+        "Yelan",
+        "Neuvillette",
+        "Arlecchino"
+      ],
+      "c6r1_characters": [
+        "Yelan",
+        "Neuvillette",
+        "Arlecchino"
+      ],
+      "character_tags": [
+        "Venti",
+        "Klee",
+        "Zhongli",
+        "Kazuha",
+        "Ayaka",
+        "Yoimiya",
+        "Raiden",
+        "Yae",
+        "Yelan",
+        "Alhaitham",
+        "Neuvillette",
+        "Arlecchino",
+        "Kinich",
+        "Xilonen"
+      ],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Kronjuwel; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-W-010",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "EpicNPC",
+      "url": "https://www.epicnpc.com/threads/wts-genshin-1-0-eu-184%C3%975-c6r1-chasca-collectors-account.3188830/",
+      "title": "HIST-W-010 | 184x5 total; 154 character+constellation 5★; 30 5★ weapons; C6R1 Chasca; C2 Lauma/Linnea/Xianyun/Nicole; all limited event weapons; 2020 account.",
+      "seller": "MissBellaCc",
+      "server": "EU",
+      "ar": 60,
+      "price_value": 700.0,
+      "currency": "USD",
+      "market_status": "SOLD_CONFIRMED",
+      "status_confidence": 0.95,
+      "status_evidence": "Sold via Trade Guardian",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 1,
+      "c6r1_count": 1,
+      "limited_pulls": null,
+      "history_richness": 80.0,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": 100.0,
+      "archetypes": [
+        "Value C6 / Collector",
+        "Dormant Veteran / Living History",
+        "Living Archive"
+      ],
+      "limited_c6_characters": [
+        "Chasca"
+      ],
+      "c6r1_characters": [
+        "Chasca"
+      ],
+      "character_tags": [
+        "Xianyun",
+        "Chasca",
+        "Lauma"
+      ],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Kronjuwel; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-B-002",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "EpicNPC",
+      "url": "https://www.epicnpc.com/threads/selling-eu-account-with-mavuika-c6-signature.2991798/",
+      "title": "HIST-B-002 | Mavuika C6 + signature; 72 pity after lost 50/50; monthly pass active at listing.",
+      "seller": "Bensae",
+      "server": "EU",
+      "ar": 55,
+      "price_value": 75.0,
+      "currency": "USD",
+      "market_status": "SOLD_CONFIRMED",
+      "status_confidence": 0.95,
+      "status_evidence": "Sold via Trade Guardian",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 1,
+      "c6r1_count": 0,
+      "limited_pulls": 0.0,
+      "history_richness": null,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Value C6 / Collector"
+      ],
+      "limited_c6_characters": [
+        "Mavuika"
+      ],
+      "c6r1_characters": [],
+      "character_tags": [
+        "Mavuika"
+      ],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Extrem selten; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-W-003",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "EpicNPC",
+      "url": "https://www.epicnpc.com/threads/genshin-impact-eu-ar-58-c6-clorinde-alhaitham-baizhu-bis-c2-furina-bis-more.3056694/",
+      "title": "HIST-W-003 | Clorinde C6R1; Alhaitham C6R1; Baizhu C6R1; Furina C2R1; Mavuika+BiS; Citlali; many quests/exploration remaining.",
+      "seller": "Ayanokoji213",
+      "server": "EU",
+      "ar": 58,
+      "price_value": 230.0,
+      "currency": "USD",
+      "market_status": "SOLD_CONFIRMED",
+      "status_confidence": 0.95,
+      "status_evidence": "Sold via Trade Guardian",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 3,
+      "c6r1_count": 3,
+      "limited_pulls": 0.0,
+      "history_richness": null,
+      "discovery_headroom": 70.0,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Value C6 / Collector"
+      ],
+      "limited_c6_characters": [
+        "Alhaitham",
+        "Baizhu",
+        "Clorinde"
+      ],
+      "c6r1_characters": [
+        "Alhaitham",
+        "Baizhu",
+        "Clorinde"
+      ],
+      "character_tags": [
+        "Alhaitham",
+        "Baizhu",
+        "Furina",
+        "Clorinde",
+        "Mavuika",
+        "Citlali"
+      ],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Kronjuwel; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-W-004",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "EpicNPC",
+      "url": "https://www.epicnpc.com/threads/end-game-eu-account-82x5.2928428/",
+      "title": "HIST-W-004 | 82x5; multiple C6; original owner playing since 1.0.",
+      "seller": "HououinK001",
+      "server": "EU",
+      "ar": 60,
+      "price_value": 300.0,
+      "currency": "USD",
+      "market_status": "SOLD_CONFIRMED",
+      "status_confidence": 0.95,
+      "status_evidence": "Sold via Trade Guardian",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 2,
+      "c6r1_count": 0,
+      "limited_pulls": 0.0,
+      "history_richness": 80.0,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Value C6 / Collector",
+        "Dormant Veteran / Living History"
+      ],
+      "limited_c6_characters": [],
+      "c6r1_characters": [],
+      "character_tags": [],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Kronjuwel; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-R-002",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "PlayerUp",
+      "url": "https://www.playerup.com/threads/genshin-impact-eu-ar60-34x5-star-characters-and-12x5-star-weapons-good-meta-builds.5755975/",
+      "title": "HIST-R-002 | Raiden C2, Itto C1, Eula C1, Ganyu C1, Zhongli, Yelan, Kazuha, Hu Tao, Ayaka, Tartaglia, Wanderer, Cyno, Kokomi, Shenhe; 12 5★ weapons.",
+      "seller": "Luart",
+      "server": "EU",
+      "ar": 60,
+      "price_value": 300.0,
+      "currency": "USD",
+      "market_status": "OUTCOME_UNKNOWN",
+      "status_confidence": 0.5,
+      "status_evidence": "Historical listing; sale unconfirmed",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 0,
+      "c6r1_count": 0,
+      "limited_pulls": 0.0,
+      "history_richness": null,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "General Roster"
+      ],
+      "limited_c6_characters": [],
+      "c6r1_characters": [],
+      "character_tags": [
+        "Tartaglia",
+        "Zhongli",
+        "Ganyu",
+        "Hu Tao",
+        "Eula",
+        "Kazuha",
+        "Ayaka",
+        "Raiden",
+        "Kokomi",
+        "Itto",
+        "Shenhe",
+        "Yelan",
+        "Cyno",
+        "Wanderer"
+      ],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Selten; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-L-001",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "PlayerUp",
+      "url": "https://www.playerup.com/threads/personal-account-for-sale-ive-been-playing-since-release-uid-70037.6230888/",
+      "title": "HIST-L-001 | Played since release; 1,154 activity days as of 2024-07-20; most map through Fontaine cleared; 1,151 achievements; claimed 3K+ lifetime pulls.",
+      "seller": "Namer",
+      "server": "EU",
+      "ar": 60,
+      "price_value": 300.0,
+      "currency": "USD",
+      "market_status": "OUTCOME_UNKNOWN",
+      "status_confidence": 0.5,
+      "status_evidence": "Historical listing; sale unconfirmed",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 0,
+      "c6r1_count": 0,
+      "limited_pulls": 0.0,
+      "history_richness": 80.0,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Dormant Veteran / Living History"
+      ],
+      "limited_c6_characters": [],
+      "c6r1_characters": [],
+      "character_tags": [],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Extrem selten; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-W-005",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "EpicNPC",
+      "url": "https://www.epicnpc.com/threads/eu-82ssr-c6r1-furina-c2r1-mavuika-c1r1-neuvilette-and-more.2932804/",
+      "title": "HIST-W-005 | 82 total 5★ stated; Furina C6R1, Mavuika C2R1, Neuvillette C1R1 and more. Tracker counts only title-confirmed Limited/weapon minimums.",
+      "seller": "MadCr",
+      "server": "EU",
+      "ar": 60,
+      "price_value": 350.0,
+      "currency": "USD",
+      "market_status": "SOLD_CONFIRMED",
+      "status_confidence": 0.95,
+      "status_evidence": "Sold via Trade Guardian",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 1,
+      "c6r1_count": 1,
+      "limited_pulls": 0.0,
+      "history_richness": null,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Value C6 / Collector"
+      ],
+      "limited_c6_characters": [
+        "Furina"
+      ],
+      "c6r1_characters": [
+        "Furina"
+      ],
+      "character_tags": [
+        "Neuvillette",
+        "Furina",
+        "Mavuika"
+      ],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Kronjuwel; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-W-006",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "EpicNPC",
+      "url": "https://www.epicnpc.com/threads/eu-ar60-15c6-253x5%E2%AD%90-mavuika-c6-furina-c6-more.3124401/",
+      "title": "HIST-W-006 | 15 C6; 253x5 total; Mavuika C6, Furina C6 and many more; 34 Stella Fortuna; all regions through Natlan 100%, Nod-Krai 38%.",
+      "seller": "sullifist",
+      "server": "EU",
+      "ar": 60,
+      "price_value": 750.0,
+      "currency": "USD",
+      "market_status": "SOLD_CONFIRMED",
+      "status_confidence": 0.95,
+      "status_evidence": "Sold via Trade Guardian",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 15,
+      "c6r1_count": 0,
+      "limited_pulls": 0.0,
+      "history_richness": null,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Value C6 / Collector"
+      ],
+      "limited_c6_characters": [
+        "Furina",
+        "Mavuika"
+      ],
+      "c6r1_characters": [],
+      "character_tags": [
+        "Furina",
+        "Mavuika"
+      ],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Kronjuwel; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-W-007",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "EpicNPC",
+      "url": "https://www.epicnpc.com/threads/ar60-eu-whale-account-c6-furina-c6-kazuha-and-more.3055857/",
+      "title": "HIST-W-007 | C6 Furina + C6 Kazuha and more; screenshots hold the remaining roster details, so score uses conservative minimums.",
+      "seller": "BazAndre",
+      "server": "EU",
+      "ar": 60,
+      "price_value": 500.0,
+      "currency": "USD",
+      "market_status": "SOLD_CONFIRMED",
+      "status_confidence": 0.95,
+      "status_evidence": "Sold via Trade Guardian",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 2,
+      "c6r1_count": 0,
+      "limited_pulls": 0.0,
+      "history_richness": null,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Value C6 / Collector"
+      ],
+      "limited_c6_characters": [
+        "Kazuha",
+        "Furina"
+      ],
+      "c6r1_characters": [],
+      "character_tags": [
+        "Kazuha",
+        "Furina"
+      ],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Kronjuwel; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-W-011",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "EpicNPC",
+      "url": "https://www.epicnpc.com/threads/eu-genshin-whale-account-260x5-c6-mavuika-c6-columbina-c6-neuvilette-more.3171805/",
+      "title": "HIST-W-011 | 260x5★ whale; C6 Mavuika, C6 Columbina, C6 Neuvillette + more; many R5 weapons; 21 Stella Fortunas.",
+      "seller": "SonGokyou",
+      "server": "EU",
+      "ar": 60,
+      "price_value": 1200.0,
+      "currency": "USD",
+      "market_status": "SOLD_CONFIRMED",
+      "status_confidence": 0.95,
+      "status_evidence": "SOLD confirmed – Trade Guardian $1200",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 3,
+      "c6r1_count": 0,
+      "limited_pulls": 0.0,
+      "history_richness": null,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Value C6 / Collector"
+      ],
+      "limited_c6_characters": [
+        "Neuvillette",
+        "Mavuika",
+        "Columbina"
+      ],
+      "c6r1_characters": [],
+      "character_tags": [
+        "Neuvillette",
+        "Mavuika",
+        "Columbina"
+      ],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Kronjuwel; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-W-012",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "EpicNPC",
+      "url": "https://www.epicnpc.com/threads/eu-genshin-impact-account-c6-mavuika-c6-yelan-c6-kazuha-c6-itto.3100359/",
+      "title": "HIST-W-012 | C6 Mavuika, C6 Yelan, C6 Kazuha, C6 Itto; personal account.",
+      "seller": "Arkinos",
+      "server": "EU",
+      "ar": 60,
+      "price_value": 340.0,
+      "currency": "USD",
+      "market_status": "SOLD_CONFIRMED",
+      "status_confidence": 0.95,
+      "status_evidence": "SOLD confirmed – Trade Guardian $340",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 4,
+      "c6r1_count": 0,
+      "limited_pulls": 0.0,
+      "history_richness": 80.0,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Value C6 / Collector",
+        "Dormant Veteran / Living History"
+      ],
+      "limited_c6_characters": [
+        "Kazuha",
+        "Itto",
+        "Yelan",
+        "Mavuika"
+      ],
+      "c6r1_characters": [],
+      "character_tags": [
+        "Kazuha",
+        "Itto",
+        "Yelan",
+        "Mavuika"
+      ],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Kronjuwel; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-W-013",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "EpicNPC",
+      "url": "https://www.epicnpc.com/threads/genshin-impact-eu-ar-60-kind-of-whale-account-3x-c6-5-characters.2880845/",
+      "title": "HIST-W-013 | EU AR60; 3x C6 5★ characters; 100% region completion.",
+      "seller": "leagueoftim",
+      "server": "EU",
+      "ar": 60,
+      "price_value": 850.0,
+      "currency": "USD",
+      "market_status": "SOLD_CONFIRMED",
+      "status_confidence": 0.95,
+      "status_evidence": "SOLD confirmed – Trade Guardian $850",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 3,
+      "c6r1_count": 0,
+      "limited_pulls": 0.0,
+      "history_richness": null,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Value C6 / Collector"
+      ],
+      "limited_c6_characters": [],
+      "c6r1_characters": [],
+      "character_tags": [],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Extrem selten; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    },
+    {
+      "source_key": "tracker-v26:HIST-B-004",
+      "provenance": "tracker_historical_view_v26",
+      "platform": "EpicNPC",
+      "url": "https://www.epicnpc.com/threads/eu-c6-arlecchino-lauma-citlali-furina-flins-ineffa-sign-guaranteed-pity.3150178/",
+      "title": "HIST-B-004 | Arlecchino C6; Lauma, Citlali, Furina; Flins and Ineffa signatures; guaranteed character pity 64/90.",
+      "seller": "Descream4",
+      "server": "EU",
+      "ar": 56,
+      "price_value": 100.0,
+      "currency": "USD",
+      "market_status": "SOLD_CLAIMED",
+      "status_confidence": 0.65,
+      "status_evidence": "Sold/closed claimed but not independently confirmed",
+      "observed_at": "2026-09-17T00:00:00Z",
+      "limited_c6_count": 1,
+      "c6r1_count": 0,
+      "limited_pulls": 0.0,
+      "history_richness": null,
+      "discovery_headroom": null,
+      "resource_richness": null,
+      "legacy_collector_value": null,
+      "archetypes": [
+        "Value C6 / Collector"
+      ],
+      "limited_c6_characters": [
+        "Arlecchino"
+      ],
+      "c6r1_characters": [],
+      "character_tags": [
+        "Furina",
+        "Arlecchino",
+        "Citlali",
+        "Ineffa",
+        "Lauma",
+        "Flins"
+      ],
+      "risk_hits": 0,
+      "notes": "Imported from tracker Historical_View v26. Rarity=Sehr selten; exact historical observation date unavailable; import timestamp used only for storage, not recency confidence."
+    }
+  ]
+}

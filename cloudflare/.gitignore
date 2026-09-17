@@ -1,0 +1,8 @@
+.generated_ingest_token.txt
+.env
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+.wrangler/
+.DS_Store

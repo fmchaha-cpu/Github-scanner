@@ -1,0 +1,175 @@
+# Public, unauthenticated marketplace pages only.
+# Do not bypass login, CAPTCHAs, rate limits, robots restrictions, or anti-bot controls.
+# Coverage records explicitly distinguish searched/no-hit, skipped rotation, and errors.
+
+preferences:
+  # Explicit current tracker preferences only. Edit this list when priorities change.
+  favorite_characters:
+    - Venti
+    - Arlecchino
+
+collector:
+  deep_verify_limit_per_source: 6
+  deep_verify_hard_cap_per_source: 16
+  calibration_verify_sample_per_source: 2
+  control_verify_sample_per_source: 1
+
+sources:
+  - name: PlayerAuctions
+    enabled: true
+    use_browser_fallback: true
+    circuit_breaker_enabled: true
+    circuit_breaker_blocked_threshold: 1
+    circuit_breaker_zero_yield_threshold: 4
+    deep_verify_limit: 10
+    deep_verify_hard_cap: 20
+    calibration_verify_sample: 3
+    detail_patterns:
+      - '/genshin-impact-account/\d+a'
+    scans:
+      # Broad index catches cheap anomalies that character/category pages can miss.
+      - family: all_accounts
+        label: Full Genshin account index
+        max_pages: 2
+        url: https://www.playerauctions.com/genshin-impact-account/
+
+      # Always-on high-recall anchors.
+      - family: eu_all
+        label: EU account index
+        max_pages: 2
+        url: https://www.playerauctions.com/genshin-impact-account/eu/
+      - family: c6_generic
+        label: C6 category
+        max_pages: 2
+        url: https://www.playerauctions.com/genshin-impact-account/c6/
+      - family: resource_rich
+        label: Reroll / resource category
+        url: https://www.playerauctions.com/genshin-impact-account/reroll/
+
+      # Core favorite / high-value characters every run.
+      - family: favorite_character
+        label: Venti category
+        url: https://www.playerauctions.com/genshin-impact-account/venti/
+      - family: favorite_character
+        label: Arlecchino category
+        url: https://www.playerauctions.com/genshin-impact-account/arlecchino/
+      - family: favorite_character
+        label: Columbina category
+        url: https://www.playerauctions.com/genshin-impact-account/columbina/
+      - family: high_value_character
+        label: Furina category
+        url: https://www.playerauctions.com/genshin-impact-account/furina/
+      - family: high_value_character
+        label: Mavuika category
+        url: https://www.playerauctions.com/genshin-impact-account/mavuika/
+
+      # Rotating breadth: every hour covers one bucket, while core searches above always run.
+      - family: rotating_character
+        label: Neuvillette category
+        rotation: {mod: 4, slot: 0}
+        url: https://www.playerauctions.com/genshin-impact-account/neuvillette/
+      - family: rotating_character
+        label: Raiden category
+        rotation: {mod: 4, slot: 0}
+        url: https://www.playerauctions.com/genshin-impact-account/raiden/
+      - family: rotating_character
+        label: Kazuha category
+        rotation: {mod: 4, slot: 1}
+        url: https://www.playerauctions.com/genshin-impact-account/kazuha/
+      - family: rotating_character
+        label: Hu Tao category
+        rotation: {mod: 4, slot: 1}
+        url: https://www.playerauctions.com/genshin-impact-account/hu-tao/
+      - family: rotating_character
+        label: Xilonen category
+        rotation: {mod: 4, slot: 2}
+        url: https://www.playerauctions.com/genshin-impact-account/xilonen/
+      - family: rotating_character
+        label: Skirk category
+        rotation: {mod: 4, slot: 2}
+        url: https://www.playerauctions.com/genshin-impact-account/skirk/
+      - family: rotating_character
+        label: Zhongli category
+        rotation: {mod: 4, slot: 3}
+        url: https://www.playerauctions.com/genshin-impact-account/zhongli/
+      - family: rotating_character
+        label: Nahida category
+        rotation: {mod: 4, slot: 3}
+        url: https://www.playerauctions.com/genshin-impact-account/nahida/
+
+  - name: ZeusX
+    enabled: true
+    use_browser_fallback: true
+    circuit_breaker_enabled: true
+    circuit_breaker_blocked_threshold: 2
+    circuit_breaker_zero_yield_threshold: 4
+    deep_verify_limit: 10
+    deep_verify_hard_cap: 16
+    calibration_verify_sample: 5
+    control_verify_sample: 2
+    detail_patterns:
+      - '/item/'
+      - '/listing/'
+      - '/genshin-impact/[^/]+/accounts/'
+    scans:
+      - family: all_accounts
+        label: Genshin account marketplace
+        max_pages: 3
+        url: https://zeusx.com/game/genshin-impact/13/accounts
+
+  - name: EpicNPC
+    enabled: true
+    use_browser_fallback: true
+    circuit_breaker_enabled: true
+    circuit_breaker_blocked_threshold: 1
+    circuit_breaker_zero_yield_threshold: 3
+    deep_verify_limit: 10
+    calibration_verify_sample: 3
+    detail_patterns:
+      - '/threads/'
+    scans:
+      - family: eu_forum
+        label: EU forum recent pages
+        page_label: page-1
+        max_pages: 5
+        url: https://www.epicnpc.com/forums/genshin-impact-eu-accounts.2156/
+
+  - name: PlayerUp
+    enabled: true
+    use_browser_fallback: true
+    circuit_breaker_enabled: true
+    circuit_breaker_blocked_threshold: 2
+    circuit_breaker_zero_yield_threshold: 4
+    deep_verify_limit: 12
+    deep_verify_hard_cap: 18
+    calibration_verify_sample: 6
+    control_verify_sample: 2
+    detail_patterns:
+      - '/threads/'
+    scans:
+      - family: all_accounts
+        label: Genshin marketplace recent pages
+        page_label: page-1
+        max_pages: 3
+        url: https://www.playerup.com/accounts/genshinimpactaccount/
+      - family: price_low
+        label: Genshin marketplace price ascending
+        page_label: page-1-price-asc
+        max_pages: 2
+        url: https://www.playerup.com/accounts/genshinimpactaccount/?direction=asc&order=price
+
+  # Disabled until public index URLs are validated manually. The quality feed will keep these
+  # visibly "not covered" in documentation rather than pretending they were scanned.
+  - name: Eldorado
+    enabled: false
+    use_browser_fallback: true
+    detail_patterns:
+      - '/[^/]+-account/'
+    scans: []
+
+  - name: G2G
+    enabled: false
+    use_browser_fallback: true
+    detail_patterns:
+      - '/offer/'
+    scans: []

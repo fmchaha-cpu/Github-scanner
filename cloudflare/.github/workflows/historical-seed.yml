@@ -1,0 +1,58 @@
+name: Import tracker historical seed
+
+on:
+  workflow_dispatch:
+
+jobs:
+  import-seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Import and verify evidence-backed tracker history
+        env:
+          MARKET_API_URL: ${{ secrets.MARKET_API_URL }}
+          MARKET_API_TOKEN: ${{ secrets.MARKET_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib, urllib.request
+
+          base = os.environ['MARKET_API_URL'].rstrip('/')
+          token = os.environ['MARKET_API_TOKEN']
+
+          with urllib.request.urlopen(base + '/health', timeout=30) as r:
+              health = json.load(r)
+          print('Worker health before import:')
+          print(json.dumps(health, indent=2))
+          version = str(health.get('version', 'unknown')).lstrip('v')
+          if not version.startswith('0.8'):
+              raise SystemExit(f'Worker {version!r} is not v0.8; deploy scripts/deploy_v08.ps1 first')
+
+          payload = json.loads(pathlib.Path('historical_seed_tracker_v26.json').read_text(encoding='utf-8'))
+          expected = len(payload.get('records') or [])
+          body = json.dumps(payload).encode('utf-8')
+          req = urllib.request.Request(
+              base + '/v1/historical/import', data=body, method='POST',
+              headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+          )
+          with urllib.request.urlopen(req, timeout=60) as r:
+              result = json.load(r)
+          print('Import response:')
+          print(json.dumps(result, indent=2))
+          if result.get('errors'):
+              raise SystemExit(f"Historical import returned errors: {result['errors']}")
+
+          with urllib.request.urlopen(base + '/v1/historical/stats', timeout=30) as r:
+              stats = json.load(r)
+          print('Historical stats after import:')
+          print(json.dumps(stats, indent=2))
+          seed_count = int(stats.get('tracker_seed_records') or 0)
+          confirmed = int((stats.get('by_status') or {}).get('SOLD_CONFIRMED', 0) or 0)
+          if seed_count < expected:
+              raise SystemExit(f'Historical seed verification failed: expected >= {expected}, got {seed_count}')
+          if confirmed < 8:
+              raise SystemExit(f'Historical seed looks incomplete: only {confirmed} SOLD_CONFIRMED records')
+          print(f'Historical seed verified: {seed_count} tracker records, {confirmed} confirmed-sold anchors')
+          PY

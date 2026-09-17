@@ -1,0 +1,9 @@
+name = "genshin-market-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "genshin-market"
+database_id = "9d60814f-e02b-4812-9e7e-1000e7ae4152"

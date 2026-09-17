@@ -1,0 +1,40 @@
+name: Market collector health
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 */6 * * *'
+
+jobs:
+  health:
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    steps:
+      - name: Check API, deployment and last scan
+        env:
+          MARKET_API_URL: ${{ secrets.MARKET_API_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+          from datetime import datetime, timezone
+          base = os.environ['MARKET_API_URL'].rstrip('/')
+          with urllib.request.urlopen(base + '/health', timeout=20) as r:
+              data = json.load(r)
+          print(json.dumps(data, indent=2))
+          version = str(data.get('version', 'unknown')).lstrip('v')
+          if not version.startswith('0.8'):
+              raise SystemExit(f'Worker deployment mismatch: expected v0.8, got {version}')
+          last = data.get('last_scan')
+          if not last or not last.get('started_at'):
+              raise SystemExit('No completed scan has been recorded yet')
+          ts = last['started_at'].replace('Z', '+00:00')
+          age = (datetime.now(timezone.utc) - datetime.fromisoformat(ts)).total_seconds()/3600
+          if age > 3:
+              raise SystemExit(f'Collector stale: last scan {age:.1f} hours ago')
+          if last.get('status') == 'failed':
+              raise SystemExit('Last collector run failed')
+          if int(data.get('historical_seed_records') or 0) < 10:
+              raise SystemExit('Historical seed missing or incomplete; run Import tracker historical seed')
+          PY

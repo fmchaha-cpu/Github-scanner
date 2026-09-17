@@ -1,0 +1,40 @@
+{
+  "cases": [
+    {
+      "id": "cheap_eu_furina_c6",
+      "text": "EU AR55 Furina C6 account Seller: example_store $40 BUY NOW full access",
+      "favorite_characters": ["Venti", "Arlecchino"],
+      "expect": {"server": "EU", "limited_c6_count": 1, "candidate": true, "reason_contains": "cheap_EU_C6", "risk_flags": []}
+    },
+    {
+      "id": "favorite_venti_c6",
+      "text": "Europe AR55 Venti C6 + Jean Mona account Seller: oldplayer 118 USD Available now",
+      "favorite_characters": ["Venti", "Arlecchino"],
+      "expect": {"server": "EU", "limited_c6_count": 1, "candidate": true, "reason_contains": "favorite_character_high_fit", "favorite_contains": "Venti"}
+    },
+    {
+      "id": "standard_qiqi_not_limited_c6",
+      "text": "EU AR55 Qiqi C6 Jean C1 account 140 USD Seller: ordinary_shop",
+      "favorite_characters": ["Venti", "Arlecchino"],
+      "expect": {"server": "EU", "limited_c6_count": 0}
+    },
+    {
+      "id": "dormant_veteran_discovery",
+      "text": "EU AR58 old main day 1 2020 original owner, low exploration, many quests left, Fontaine unfarmed, fragile resin, crowns, mora, talent books, weapon materials, 90 USD Seller: veteran_user",
+      "favorite_characters": ["Venti", "Arlecchino"],
+      "expect": {"server": "EU", "candidate": true, "reason_contains": "dormant_veteran_combo", "archetype_contains": "Dormant Veteran / Living History"}
+    },
+    {
+      "id": "risk_negative_primos_blocks_priority",
+      "text": "EU AR55 Furina C6 account 50 USD Seller: risky_shop BUY NOW negative primogems warning",
+      "favorite_characters": ["Venti", "Arlecchino"],
+      "expect": {"risk_contains": "negative_primos", "alert_candidate": false}
+    },
+    {
+      "id": "resource_rich_500_pulls",
+      "text": "EU AR20 starter account 80000 primogems 10 intertwined fates 110 USD Seller: resource_shop Available now",
+      "favorite_characters": ["Venti", "Arlecchino"],
+      "expect": {"server": "EU", "candidate": true, "reason_contains": "EU_500plus_pulls", "archetype_contains": "Resource Rich / Wish Heavy"}
+    }
+  ]
+}
