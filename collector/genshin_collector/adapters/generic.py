@@ -82,6 +82,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
         calibration_verify_sample: int = 2,
         control_verify_sample: int = 1,
         merit_verify_sample: int = 4,
+        plausibility_verify_sample: int = 2,
         circuit_breaker_enabled: bool = True,
         circuit_breaker_blocked_threshold: int = 1,
         circuit_breaker_zero_yield_threshold: int = 4,
@@ -97,6 +98,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
         self.calibration_verify_sample = max(0, calibration_verify_sample)
         self.control_verify_sample = max(0, control_verify_sample)
         self.merit_verify_sample = max(0, merit_verify_sample)
+        self.plausibility_verify_sample = max(0, plausibility_verify_sample)
         self.circuit_breaker_enabled = bool(circuit_breaker_enabled)
         self.circuit_breaker_blocked_threshold = max(1, int(circuit_breaker_blocked_threshold))
         self.circuit_breaker_zero_yield_threshold = max(2, int(circuit_breaker_zero_yield_threshold))
@@ -592,11 +594,13 @@ class GenericMarketplaceAdapter(SourceAdapter):
         return (candidates[0], "profile_link") if candidates else (None, None)
 
     def _seller_from_detail_with_source(
-        self, soup: BeautifulSoup, detail_url: str, title: str
+        self, soup: BeautifulSoup, detail_url: str, title: str, expected_seller: str | None = None
     ) -> tuple[str | None, str | None]:
-        # Detail pages often render seller identity in a sidebar outside <main>. Search the whole
-        # document, but only accept labels attached to profile/store URLs to avoid nav contamination.
+        # Detail pages often contain many profile links (author, nav account, related listings).
+        # v0.10 first looks for the exact normalized card seller among profile/store links; only
+        # then does it fall back to the strongest visible profile candidate.
         banned = {"seller", "seller profile", "view profile", "profile", "shop", "store", "buy now", "contact seller"}
+        candidates: list[tuple[str, str, int]] = []
         for a in soup.find_all("a", href=True):
             href = urljoin(detail_url, a.get("href", ""))
             if not self._looks_like_profile_href(href):
@@ -608,8 +612,21 @@ class GenericMarketplaceAdapter(SourceAdapter):
             low = label.lower()
             if not label or low in banned or low in title.lower() or len(label) > 50:
                 continue
-            if re.fullmatch(r"[A-Za-z0-9_. -]{2,50}", label):
-                return label, "detail_profile_link"
+            if not re.fullmatch(r"[A-Za-z0-9_. -]{2,50}", label):
+                continue
+            parent_text = clean_text(a.parent.get_text(" ", strip=True) if isinstance(a.parent, Tag) else "").lower()
+            score = 0
+            if re.search(r"seller|member|author|vendor|shop|store", parent_text):
+                score += 4
+            if a.find_parent(["main", "article", "aside"]):
+                score += 2
+            if expected_seller and self._same_seller(label, expected_seller):
+                score += 20
+            candidates.append((label, "detail_profile_link", score))
+        if candidates:
+            candidates.sort(key=lambda x: (x[2], len(x[0])), reverse=True)
+            return candidates[0][0], candidates[0][1]
+
         # Labeled detail text is a weaker fallback than a profile URL because marketplace
         # boilerplate can contain generic phrases such as "seller verification".
         body_text = clean_text((soup.body or soup).get_text(" ", strip=True))
@@ -624,7 +641,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
         # carousel cannot accidentally mark the current account sold/live. Prefer positive buy
         # controls when both buy and sold labels exist elsewhere on the page.
         sold_exact = {"sold", "sold out", "listing ended", "unavailable", "out of stock"}
-        buy_exact = {"buy now", "purchase now", "buy item", "buy account", "add to cart", "checkout"}
+        buy_exact = {"buy", "buy now", "purchase", "purchase now", "buy item", "buy account", "add to cart", "checkout", "order now"}
         controls: list[tuple[str, Tag]] = []
         # Native interactive controls are strongest. Some marketplaces (notably ZeusX) render
         # purchase controls as role=button or styled div/span nodes, so accept those only when
@@ -679,6 +696,69 @@ class GenericMarketplaceAdapter(SourceAdapter):
             r"^(?:(?:\[(?:wtb|buying|buyer|looking)\])\s*|wtb\b|buying\b|buyer\b|looking\s+for\b|searching\s+for\b|want\s+to\s+buy\b|buy\s+account\b)",
             low,
         ))
+
+    @staticmethod
+    def _seller_key(value: str | None) -> str:
+        """Normalize public marketplace handles for identity comparison only.
+
+        This intentionally ignores case, spaces, punctuation and common profile prefixes, but
+        does not perform fuzzy matching.  A different normalized handle is still a mismatch.
+        """
+        if not value:
+            return ""
+        text = clean_text(value).lower()
+        text = re.sub(r"^(?:seller|sold by|merchant|vendor|shop|store)\s*[:\-]?\s*", "", text)
+        return re.sub(r"[^a-z0-9]", "", text)
+
+    @classmethod
+    def _same_seller(cls, left: str | None, right: str | None) -> bool:
+        lk, rk = cls._seller_key(left), cls._seller_key(right)
+        return bool(lk and rk and lk == rk)
+
+    @staticmethod
+    def _generic_detail_title(value: str, detail_url: str) -> bool:
+        low = clean_text(value).lower().strip(' -|')
+        host = urlparse(detail_url).netloc.lower().removeprefix('www.')
+        host_root = host.split('.')[0] if host else ''
+        return (
+            not low
+            or low in {host, host_root, f"www.{host}", "home", "account", "listing", "marketplace"}
+            or low.startswith("just a moment")
+            or low.startswith("verify you are human")
+        )
+
+    @staticmethod
+    def _apply_price_plausibility(obs: ListingObservation) -> ListingObservation:
+        """Flag obvious marketplace-price parsing anomalies without inventing a replacement price.
+
+        The scanner keeps the observed value for diagnostics, but implausible values are prevented
+        from becoming alert candidates.  This is deliberately conservative: a genuinely cheap
+        account can still be deep-verified by the dedicated plausibility probe.
+        """
+        obs.quality_flags = [f for f in obs.quality_flags if not f.startswith("price_implausible:")]
+        price = obs.price_value
+        if price is None:
+            return obs
+        flags: list[str] = []
+        mature = obs.ar is not None and obs.ar >= 40
+        high_value_signal = bool(
+            obs.limited_c6_count
+            or obs.c6r1_count
+            or (obs.limited_pulls is not None and obs.limited_pulls >= 200)
+            or len(obs.character_tags or []) >= 5
+            or re.search(r"\bwhale\b", obs.title or "", re.I)
+        )
+        if price <= 0:
+            flags.append("price_implausible:nonpositive")
+        elif price < 3 and (mature or high_value_signal):
+            flags.append("price_implausible:ultra_low_mature")
+        elif price < 8 and obs.limited_c6_count >= 1:
+            flags.append("price_implausible:ultra_low_c6")
+        if flags:
+            obs.quality_flags.extend(flags)
+            obs.data_confidence = min(obs.data_confidence or 70, 55.0)
+            obs.is_alert_candidate = False
+        return obs
 
     @staticmethod
     def _extraction_quality(obs: ListingObservation) -> float:
@@ -809,6 +889,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
                 field_sources=field_sources,
                 **features,
             )
+            obs = self._apply_price_plausibility(obs)
             obs.extraction_quality = self._extraction_quality(obs)
             obs = self._finalize_market_meta(enrich_and_score(obs))
             if href in found:
@@ -893,12 +974,15 @@ class GenericMarketplaceAdapter(SourceAdapter):
         card_server = original.server
         card_seller = original.seller
         card_c6_count = original.limited_c6_count
+        card_c6_names = list(original.limited_c6_characters)
+        card_title = original.title
+        card_server_source = original.field_sources.get("server")
 
         # Verification-derived flags describe one detail fetch only. Clear stale flags before
         # rebuilding them so later successful checks can actually improve the quality metrics.
         transient_prefixes = (
-            "identity_mismatch:", "detail_missing_", "detail_weak_",
-            "detail_fetch_failed:", "deep_verify:",
+            "identity_mismatch:", "detail_missing_", "detail_weak_", "detail_unconfirmed_",
+            "detail_fetch_failed:", "detail_blocked:", "deep_verify:",
         )
         original.quality_flags = [
             f for f in original.quality_flags if not any(f.startswith(p) for p in transient_prefixes)
@@ -910,14 +994,25 @@ class GenericMarketplaceAdapter(SourceAdapter):
         main_text = clean_text(main_node.get_text(" ", strip=True))
         structured = self._structured_product(soup)
         h1 = soup.find("h1")
+        detail_title_candidate = ""
+        detail_title_source: str | None = None
         if h1:
-            title = clean_text(h1.get_text(" ", strip=True))
-            title_source = "detail_h1"
+            detail_title_candidate = clean_text(h1.get_text(" ", strip=True))
+            detail_title_source = "detail_h1"
         elif structured.get("title"):
-            title = str(structured.get("title"))
-            title_source = "jsonld"
+            detail_title_candidate = clean_text(str(structured.get("title")))
+            detail_title_source = "jsonld"
+
+        # Never let a generic challenge/domain H1 destroy a richer marketplace card title.
+        if (
+            detail_title_candidate
+            and not self._generic_detail_title(detail_title_candidate, original.url)
+            and self._title_score(detail_title_candidate) >= self._title_score(card_title) - 2
+        ):
+            title = detail_title_candidate
+            title_source = detail_title_source or "detail_text"
         else:
-            title = original.title
+            title = card_title
             title_source = original.field_sources.get("title", "card_fallback")
 
         parsed_price, parsed_currency = parse_price(main_text)
@@ -931,9 +1026,10 @@ class GenericMarketplaceAdapter(SourceAdapter):
             seller = str(structured.get("seller"))
             seller_source = "jsonld"
         else:
-            seller, seller_source = self._seller_from_detail_with_source(soup, original.url, title)
+            seller, seller_source = self._seller_from_detail_with_source(soup, original.url, title, card_seller)
 
-        detail_server = parse_server(title)
+        # Server extraction intentionally ignores arbitrary footer text.
+        detail_server = parse_server(detail_title_candidate or title)
         server_source: str | None = "detail_title" if detail_server else None
         if not detail_server:
             m_server = re.search(
@@ -946,10 +1042,16 @@ class GenericMarketplaceAdapter(SourceAdapter):
                 server_source = "detail_labeled_text"
         server = detail_server or original.server
 
-        detail_ar = parse_ar(f"{title} {main_text[:12000]}")
+        detail_ar = parse_ar(f"{detail_title_candidate} {main_text[:12000]}")
         ar = detail_ar or original.ar
-        primos, intertwined, pulls = parse_resources(f"{title} {main_text[:16000]}")
-        features = infer_features(f"{title} {main_text[:16000]}", self.favorite_characters)
+        primos, intertwined, pulls = parse_resources(f"{detail_title_candidate} {main_text[:16000]}")
+
+        # Keep card-discovered content signals in the final observation, but maintain a separate
+        # detail-only feature set for deciding whether the valuable claim itself was independently
+        # confirmed.  Missing detail text is uncertainty, not a contradiction.
+        detail_features = infer_features(f"{detail_title_candidate} {main_text[:16000]}", self.favorite_characters)
+        features = infer_features(f"{card_title} {detail_title_candidate} {main_text[:16000]}", self.favorite_characters)
+
         if structured.get("availability"):
             availability = str(structured.get("availability"))
             availability_source = "jsonld"
@@ -965,10 +1067,15 @@ class GenericMarketplaceAdapter(SourceAdapter):
             mismatches.append("server")
         if card_price is not None and price is not None and abs(card_price - float(price)) > 0.01:
             mismatches.append("price")
-        if card_seller and seller and card_seller.lower() != seller.lower():
+        if card_seller and seller and not self._same_seller(card_seller, seller):
             mismatches.append("seller")
-        if card_c6_count and features["limited_c6_count"] < card_c6_count:
-            mismatches.append("c6")
+
+        # v0.10: absence of C6 text on a detail page is no longer treated as a contradiction.
+        # Only explicit, conflicting C6 character evidence becomes a hard mismatch.
+        detail_c6_names = {x.lower() for x in detail_features.get("limited_c6_characters", [])}
+        card_c6_set = {x.lower() for x in card_c6_names}
+        if card_c6_set and detail_c6_names and card_c6_set.isdisjoint(detail_c6_names):
+            mismatches.append("c6_character")
 
         field_sources = dict(original.field_sources)
         field_sources["title"] = title_source
@@ -984,7 +1091,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
             field_sources["ar"] = "detail_text"
         if primos is not None or intertwined is not None or pulls is not None:
             field_sources["resources"] = "detail_text"
-        if features.get("limited_c6_count") or features.get("character_tags"):
+        if detail_features.get("limited_c6_count") or detail_features.get("character_tags"):
             field_sources["characters"] = "detail_text"
         if availability:
             field_sources["availability"] = availability_source or "detail_text"
@@ -1012,18 +1119,20 @@ class GenericMarketplaceAdapter(SourceAdapter):
         original.detail_verified_at = utcnow_iso()
         original.field_sources = field_sources
 
-        merit_evidence = bool(
-            original.limited_c6_count
-            or original.c6r1_count
-            or (original.limited_pulls is not None and original.limited_pulls >= 300)
-            or original.history_hits
-            or original.legacy_hits
-            or original.old_alt_hits
-            or original.favorite_character_names
+        detail_merit_evidence = bool(
+            detail_features.get("limited_c6_count")
+            or detail_features.get("c6r1_count")
+            or (pulls is not None and pulls >= 300)
+            or detail_features.get("history_hits")
+            or detail_features.get("legacy_hits")
+            or detail_features.get("old_alt_hits")
+            or detail_features.get("favorite_character_names")
         )
         live = availability in {"BUY NOW", "In Stock", "Available"}
 
-        # Identity-bound verification requires evidence from the detail page itself.
+        # Identity answers "is this exact listing consistently the same listing?".  It is kept
+        # separate from merit verification so an account can be identity-verified while a C6/resource
+        # claim remains unconfirmed.  The alert gate requires both.
         price_evidence_strong = bool(
             structured_price is not None
             or (
@@ -1032,14 +1141,26 @@ class GenericMarketplaceAdapter(SourceAdapter):
                 and abs(float(parsed_price) - float(card_price)) <= 0.01
             )
         )
-        server_evidence_strong = detail_server is not None
+        contextual_server_strong = bool(
+            card_server
+            and (
+                card_server_source == "url_slug"
+                or (self.name.lower() == "epicnpc" and card_server_source == "query_context")
+            )
+        )
+        server_evidence_strong = detail_server is not None or contextual_server_strong
+        seller_evidence_strong = bool(seller) and (not card_seller or self._same_seller(card_seller, seller))
         identity_complete = bool(
             original.external_id
             and price_evidence_strong
             and server_evidence_strong
-            and bool(seller)
-            and merit_evidence
+            and seller_evidence_strong
         )
+
+        if card_c6_count and detail_features.get("limited_c6_count", 0) < card_c6_count:
+            original.quality_flags.append("detail_unconfirmed_c6")
+        if not detail_merit_evidence:
+            original.quality_flags.append("detail_missing_merit_evidence")
 
         if mismatches:
             original.data_confidence = min(original.data_confidence or 70, 45)
@@ -1064,11 +1185,13 @@ class GenericMarketplaceAdapter(SourceAdapter):
                     original.quality_flags.append("detail_weak_price_evidence")
                 if not server_evidence_strong:
                     original.quality_flags.append("detail_weak_server_evidence")
-                if not merit_evidence:
-                    original.quality_flags.append("detail_missing_merit_evidence")
 
-        original.parser_strategy = "detail_structured_v09" if structured else "detail_text_v09"
-        # enrich_and_score() also refreshes generic missing/not-detail flags.
+        original = self._apply_price_plausibility(original)
+        if any(f.startswith("price_implausible:") for f in original.quality_flags):
+            # Price may still identify the same page, but it is not safe live-price evidence.
+            original.strict_live = False
+
+        original.parser_strategy = "detail_structured_v10" if structured else "detail_text_v10"
         verified = self._finalize_market_meta(enrich_and_score(original))
         verified.extraction_quality = self._extraction_quality(verified)
         return verified
@@ -1093,6 +1216,7 @@ class GenericMarketplaceAdapter(SourceAdapter):
         merit_pool = [
             r for r in rows
             if r.url not in selected_urls
+            and not any(f.startswith("price_implausible:") for f in r.quality_flags)
             and r.price_value is not None and r.price_value <= 200
             and (
                 r.limited_c6_count > 0 or r.c6r1_count > 0 or r.multi_c6
@@ -1110,6 +1234,20 @@ class GenericMarketplaceAdapter(SourceAdapter):
         merit_n = min(self.merit_verify_sample, remaining)
         for row in merit_pool[:merit_n]:
             selected.append((row, "merit_probe"))
+            selected_urls.add(row.url)
+        remaining = max(0, self.deep_verify_hard_cap - len(selected))
+
+        # Price-plausibility probes are specifically for suspicious values such as a mature "whale"
+        # thread parsed as $1.10.  They are diagnostics, not purchase candidates.
+        plausibility_pool = [
+            r for r in rows
+            if r.url not in selected_urls
+            and any(f.startswith("price_implausible:") for f in r.quality_flags)
+        ]
+        plausibility_pool.sort(key=lambda r: (r.collector_priority, -(r.price_value or 10**9)), reverse=True)
+        plausibility_n = min(self.plausibility_verify_sample, remaining)
+        for row in plausibility_pool[:plausibility_n]:
+            selected.append((row, "plausibility_probe"))
             selected_urls.add(row.url)
         remaining = max(0, self.deep_verify_hard_cap - len(selected))
 
@@ -1152,6 +1290,16 @@ class GenericMarketplaceAdapter(SourceAdapter):
                 row.detail_http_status = fetched.http_status
                 row.detail_html_bytes = fetched.html_bytes
                 row.detail_blocked_signals = list(fetched.blocked_signals)
+                if fetched.blocked_signals:
+                    row.data_confidence = min(row.data_confidence or 70, 75)
+                    row.identity_verified = False
+                    row.strict_live = False
+                    row.is_alert_candidate = False
+                    row.quality_flags.append("detail_blocked:" + "+".join(sorted(set(fetched.blocked_signals))))
+                    row.quality_flags.append(f"deep_verify:{reason}")
+                    row.extraction_quality = self._extraction_quality(row)
+                    by_url[row.url] = self._finalize_market_meta(enrich_and_score(row))
+                    continue
                 verified = self._parse_detail(row, fetched.html)
                 verified.verification_reason = reason
                 if f"deep_verify:{reason}" not in verified.quality_flags:

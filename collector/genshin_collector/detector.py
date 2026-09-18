@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from .models import ListingObservation
 
-DETECTOR_VERSION = "v2.6"
+DETECTOR_VERSION = "v2.7"
 
 
 def _cap(x: float) -> float:
@@ -173,6 +173,11 @@ def enrich_and_score(o: ListingObservation) -> ListingObservation:
         priority -= min(12, o.manufactured_hits * 4)
         reasons.append("manufactured_signal")
 
+    price_plausibility_problem = any(f.startswith("price_implausible:") for f in o.quality_flags)
+    if price_plausibility_problem:
+        priority -= 45
+        reasons.append("price_plausibility_hold")
+
     priority = _cap(priority)
     o.collector_priority = priority
     o.detector_reason = ",".join(reasons) if reasons else "baseline"
@@ -180,6 +185,10 @@ def enrich_and_score(o: ListingObservation) -> ListingObservation:
 
     # This flag means "send to human/ChatGPT crown-jewel review"; it is never an autonomous purchase alert.
     price_gate = price is not None and (price <= 150 or (price <= 200 and priority >= 96))
+    merit_uncertain = any(
+        f.startswith("detail_missing_merit_evidence") or f.startswith("detail_unconfirmed_c6")
+        for f in o.quality_flags
+    )
     o.is_alert_candidate = bool(
         priority >= 92
         and eu
@@ -191,6 +200,8 @@ def enrich_and_score(o: ListingObservation) -> ListingObservation:
         and o.identity_verified
         and o.strict_live
         and not o.risk_flags
+        and not price_plausibility_problem
+        and not merit_uncertain
     )
 
     # Categories are parallel: a single account may satisfy several purchase motives.

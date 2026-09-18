@@ -1,5 +1,19 @@
-# Genshin Market Tracker v0.9.2
+# Genshin Market Tracker v0.10.0
 
+## v0.10.0 – Identity + Plausibility
+
+v0.10 is the first version built from the successful v0.9.3 production scan instead of from crash recovery. The scan completed with 130 listings, 6 candidates, 17 historical records, 94.6% seller coverage and 87.7% server coverage, but 0 identity-verified listings. v0.10 targets that quality bottleneck directly.
+
+- **Identity is separated from merit:** an exact listing can now be identity-verified even when a C6/resource claim is still unconfirmed. Alert eligibility still requires the valuable claim to be supported.
+- **Missing C6 text is uncertainty, not contradiction:** only explicit conflicting C6-character evidence is a hard mismatch. `detail_unconfirmed_c6` records the weaker case.
+- **Blocked detail pages are never parsed as listings:** challenge pages preserve the good card observation and become `detail_blocked:*` telemetry instead of corrupting title/seller/C6 evidence.
+- **Rich card titles survive generic H1s:** labels such as `www.epicnpc.com` or challenge headings no longer overwrite a useful marketplace title.
+- **Seller consensus:** profile candidates are ranked and the exact normalized card seller is preferred. Matching ignores punctuation/case but never uses fuzzy username similarity.
+- **Price plausibility hold:** absurd parses such as a mature/whale account at $1.10 are kept for diagnostics but cannot trigger an alert. Dedicated plausibility probes deep-check a small sample.
+- **Comparable telemetry clarified:** reports now distinguish *any* historical coverage from *usable-confidence* coverage.
+- **More diagnostic output:** identity mismatch breakdown, blocked-detail count, merit-unconfirmed count and price-plausibility anomalies are reported explicitly.
+- **Collector/Worker versions decoupled:** collector v0.10 intentionally reuses the proven Worker API v0.9, so no Cloudflare deploy is required for this upgrade.
+- **GitHub Actions updated:** checkout v5 and setup-python v6 remove the Node 20 deprecation path.
 v0.9.3 Hotfix: CI-safe async batching tests ohne zusaetzliches pytest-asyncio Plugin.
 
 Hybrid-System fuer hohe Markt-Abdeckung, identity-bound Verifikation, historische Preisvergleiche und eine messbare Verbesserungsschleife.

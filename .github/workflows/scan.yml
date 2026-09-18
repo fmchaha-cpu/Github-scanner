@@ -18,8 +18,8 @@ jobs:
       run:
         working-directory: collector
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -64,7 +64,7 @@ jobs:
           version = str(data.get('version', 'unknown')).lstrip('v')
           if not version.startswith('0.9'):
               raise SystemExit(
-                  f"Worker version {version!r} is not compatible with collector v0.9. "
+                  f"Worker version {version!r} is not compatible with collector v0.10 using Worker API v0.9. "
                   "Run scripts/deploy_v09.ps1 first."
               )
           required = {'source_health', 'field_provenance', 'historical_stats', 'comparables'}

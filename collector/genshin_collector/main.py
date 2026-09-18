@@ -16,6 +16,9 @@ from .adapters.generic import GenericMarketplaceAdapter
 from .models import CoverageRow
 
 
+WORKER_API_VERSION = "0.9"
+
+
 def _pct(num: int, den: int) -> float:
     return round(100 * num / den, 1) if den else 0.0
 
@@ -53,7 +56,10 @@ def _quality_metrics(rows, coverage, errors) -> dict:
             "candidate_detail_verified_pct": _pct(sum(r.verification_level == "detail" for r in candidates), len(candidates)),
             "identity_verified_pct": _pct(sum(r.identity_verified for r in pr), pn),
             "strict_live_pct": _pct(sum(r.strict_live for r in pr), pn),
-            "merged_anchor_count": sum(r.parser_strategy == "anchor_merged_v09" for r in pr),
+            "merged_anchor_count": sum(r.parser_strategy in {"anchor_merged_v09", "anchor_merged_v10"} for r in pr),
+            "price_plausibility_flagged": sum(any(f.startswith("price_implausible:") for f in r.quality_flags) for r in pr),
+            "detail_blocked_count": sum(any(f.startswith("detail_blocked:") for f in r.quality_flags) for r in pr),
+            "merit_unconfirmed_count": sum(any(f.startswith("detail_missing_merit_evidence") or f.startswith("detail_unconfirmed_c6") for f in r.quality_flags) for r in pr),
             "server_hydrated_url_or_context_pct": _pct(
                 sum((r.field_sources or {}).get("server") in {"url_slug", "query_context"} for r in pr), pn
             ),
@@ -244,6 +250,40 @@ def _quality_metrics(rows, coverage, errors) -> dict:
         if pq.get("seller_pct", 100) < 40 and pq.get("listings", 0) >= 5:
             improvement_signals.append(f"seller_extraction_low:{platform}")
 
+    price_plausibility_flags = sum(
+        any(f.startswith("price_implausible:") for f in r.quality_flags) for r in rows
+    )
+    detail_blocked_count = sum(
+        any(f.startswith("detail_blocked:") for f in r.quality_flags) for r in rows
+    )
+    merit_unconfirmed_count = sum(
+        any(f.startswith("detail_missing_merit_evidence") or f.startswith("detail_unconfirmed_c6") for f in r.quality_flags)
+        for r in rows
+    )
+    identity_mismatch_breakdown = Counter()
+    for r in rows:
+        for flag in r.quality_flags:
+            if flag.startswith("identity_mismatch:"):
+                for part in flag.split(":", 1)[1].split("+"):
+                    if part:
+                        identity_mismatch_breakdown[part] += 1
+    identity_diagnostics = {
+        "detail_attempted": sum(bool(r.verification_reason) for r in rows),
+        "detail_verified": sum(r.verification_level == "detail" for r in rows),
+        "identity_verified": sum(r.identity_verified for r in rows),
+        "strict_live": sum(r.strict_live for r in rows),
+        "detail_blocked": detail_blocked_count,
+        "price_plausibility_flagged": price_plausibility_flags,
+        "merit_unconfirmed": merit_unconfirmed_count,
+        "mismatch_breakdown": dict(identity_mismatch_breakdown),
+    }
+    if price_plausibility_flags:
+        improvement_signals.append("price_plausibility_anomalies_present")
+    if detail_blocked_count:
+        improvement_signals.append("detail_verification_blocked_pages_present")
+    if identity_diagnostics["detail_verified"] >= 5 and identity_diagnostics["identity_verified"] == 0:
+        improvement_signals.append("identity_verification_zero_yield")
+
     return {
         "listing_count": n,
         "candidate_count": sum(r.is_candidate for r in rows),
@@ -265,6 +305,7 @@ def _quality_metrics(rows, coverage, errors) -> dict:
         "parser_strategies": dict(parser_strategies),
         "field_source_usage": field_source_usage,
         "stale_quality_flag_count": stale_quality_flag_count,
+        "identity_diagnostics": identity_diagnostics,
         "top_reasons": reasons.most_common(15),
         "top_quality_flags": quality_flags.most_common(20),
         "risk_flags": dict(risk_flags),
@@ -319,6 +360,7 @@ async def run(config_path: str):
     calibration_verify_sample = int(collector_cfg.get("calibration_verify_sample_per_source", 2))
     control_verify_sample = int(collector_cfg.get("control_verify_sample_per_source", 1))
     merit_verify_sample = int(collector_cfg.get("merit_verify_sample_per_source", 4))
+    plausibility_verify_sample = int(collector_cfg.get("plausibility_verify_sample_per_source", 2))
     auto_import_historical_seed = bool(collector_cfg.get("auto_import_historical_seed", True))
 
     scan_id = str(uuid.uuid4())
@@ -334,14 +376,14 @@ async def run(config_path: str):
 
     # Fail closed on a stale Worker even outside GitHub Actions. A collector/Worker mismatch can
     # silently drop provenance or historical telemetry, which is worse than a short explicit failure.
-    expected_worker = _version_major_minor(__version__)
+    expected_worker = WORKER_API_VERSION
     if worker_health_error:
         raise SystemExit(f"Worker health check failed before scan: {worker_health_error}")
     worker_version = str(worker_health.get("version") or "unknown")
     if _version_major_minor(worker_version) != expected_worker:
         raise SystemExit(
             f"Worker version mismatch: collector expects {expected_worker}, Worker reports {worker_version}. "
-            "Deploy scripts/deploy_v09.ps1 first."
+            "Deploy scripts/deploy_v09.ps1 first; collector v0.10 intentionally reuses Worker API v0.9."
         )
     required_capabilities = {"source_health", "field_provenance", "historical_stats", "comparables"}
     worker_capabilities = {str(x) for x in (worker_health.get("capabilities") or [])}
@@ -375,7 +417,7 @@ async def run(config_path: str):
         except Exception as exc:
             historical_seed_state["error"] = f"{type(exc).__name__}: {exc}"
 
-    await api.start_scan(scan_id, __version__, notes="scheduled collector v0.9 PA-card-merge+detail-hydration+auto-history")
+    await api.start_scan(scan_id, __version__, notes="scheduled collector v0.10 identity-consensus+price-plausibility+comparable-telemetry")
 
     source_health_error: str | None = None
     try:
@@ -436,6 +478,7 @@ async def run(config_path: str):
                 calibration_verify_sample=int(source.get("calibration_verify_sample", calibration_verify_sample)),
                 control_verify_sample=int(source.get("control_verify_sample", control_verify_sample)),
                 merit_verify_sample=int(source.get("merit_verify_sample", merit_verify_sample)),
+                plausibility_verify_sample=int(source.get("plausibility_verify_sample", plausibility_verify_sample)),
                 circuit_breaker_enabled=bool(source.get("circuit_breaker_enabled", True)),
                 circuit_breaker_blocked_threshold=int(source.get("circuit_breaker_blocked_threshold", 1)),
                 circuit_breaker_zero_yield_threshold=int(source.get("circuit_breaker_zero_yield_threshold", 4)),
@@ -535,11 +578,19 @@ async def run(config_path: str):
                 comp_errors += 1
         metrics["candidate_comparables"] = candidate_comparables
         metrics["candidate_comparable_errors"] = comp_errors
+        comparable_any = sum(c.get("historical_count", 0) >= 1 for c in candidate_comparables)
         comparable_ready = sum(
             c.get("historical_count", 0) >= 2 and c.get("comparison_confidence") in {"low", "medium", "high"}
             for c in candidate_comparables
         )
+        # Backward-compatible field remains the *usable* coverage metric. v0.10 also reports any
+        # historical coverage explicitly so "6 candidates have comps but coverage=0" is no longer ambiguous.
         metrics["candidate_comparable_coverage_pct"] = _pct(comparable_ready, len(ranked_candidates))
+        metrics["candidate_comparable_any_coverage_pct"] = _pct(comparable_any, len(ranked_candidates))
+        metrics["candidate_comparable_usable_coverage_pct"] = _pct(comparable_ready, len(ranked_candidates))
+        metrics["candidate_comparable_very_low_confidence_count"] = sum(
+            c.get("comparison_confidence") == "very_low" for c in candidate_comparables
+        )
         if ranked_candidates and comparable_ready < max(1, len(ranked_candidates) // 2):
             metrics["improvement_signals"].append("candidate_historical_comparable_coverage_low")
 
@@ -548,7 +599,7 @@ async def run(config_path: str):
         await api.send_system_event(
             component="collector",
             severity=severity,
-            code="SCAN_QUALITY_V09",
+            code="SCAN_QUALITY_V10",
             message=(
                 f"scan {scan_id}: {len(rows)} listings, {candidates} candidates, "
                 f"{metrics['identity_verified_count']} identity-verified, historical_pool={metrics['historical_pool']['total']}, "

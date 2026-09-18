@@ -14,6 +14,7 @@ collector:
   calibration_verify_sample_per_source: 2
   control_verify_sample_per_source: 1
   merit_verify_sample_per_source: 4
+  plausibility_verify_sample_per_source: 2
   auto_import_historical_seed: true
 
 sources:
@@ -27,6 +28,7 @@ sources:
     deep_verify_hard_cap: 24
     calibration_verify_sample: 3
     merit_verify_sample: 6
+    plausibility_verify_sample: 2
     control_verify_sample: 1
     detail_patterns:
       - '/genshin-impact-account/\d+a(?:%21|!|[-/])?'
@@ -113,6 +115,7 @@ sources:
     calibration_verify_sample: 4
     control_verify_sample: 2
     merit_verify_sample: 3
+    plausibility_verify_sample: 2
     detail_patterns:
       - '/item/'
       - '/listing/'
@@ -131,6 +134,7 @@ sources:
     circuit_breaker_zero_yield_threshold: 3
     deep_verify_limit: 10
     calibration_verify_sample: 3
+    plausibility_verify_sample: 3
     detail_patterns:
       - '/threads/'
     scans:
@@ -152,6 +156,7 @@ sources:
     calibration_verify_sample: 5
     control_verify_sample: 2
     merit_verify_sample: 4
+    plausibility_verify_sample: 3
     detail_patterns:
       - '/threads/'
     scans:

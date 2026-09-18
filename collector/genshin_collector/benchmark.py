@@ -59,7 +59,7 @@ def run_cases(path: Path) -> int:
         ok, _errors, result = evaluate_case(case)
         results.append(result)
     passed = sum(bool(r["passed"]) for r in results)
-    print(json.dumps({"benchmark_version": "v0.9", "passed": passed, "total": len(results), "results": results}, indent=2))
+    print(json.dumps({"benchmark_version": "v0.10", "passed": passed, "total": len(results), "results": results}, indent=2))
     return 0 if passed == len(results) else 1
 
 

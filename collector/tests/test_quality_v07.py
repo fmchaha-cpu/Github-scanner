@@ -29,7 +29,7 @@ def test_detail_verification_clears_stale_not_detail_verified_flag():
 
 
 def test_detector_version_is_v26():
-    assert DETECTOR_VERSION == "v2.6"
+    assert DETECTOR_VERSION == "v2.7"
 
 
 def test_v07_coverage_diagnostics_fields_roundtrip():
