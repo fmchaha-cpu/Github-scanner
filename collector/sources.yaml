@@ -7,6 +7,10 @@ preferences:
   favorite_characters:
     - Venti
     - Arlecchino
+  # Preference only: never suppress a strong or dream listing outside this range.
+  preferred_budget_min: 100
+  preferred_budget_max: 200
+  hard_budget_cap: null
 
 collector:
   deep_verify_limit_per_source: 6

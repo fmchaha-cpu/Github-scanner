@@ -397,6 +397,40 @@ async function ensureV07Tables(env: Env) {
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_source_health_cooldown ON source_health_state(cooldown_until)`).run();
 }
 
+async function ensureV10Tables(env: Env) {
+  await ensureV07Tables(env);
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS warframe_founder_scans (
+      id TEXT PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT NOT NULL,
+      sources_attempted INTEGER NOT NULL DEFAULT 0, listings_found INTEGER NOT NULL DEFAULT 0,
+      alert_eligible INTEGER NOT NULL DEFAULT 0, errors_json TEXT NOT NULL DEFAULT '[]'
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS warframe_founder_listings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT NOT NULL, url TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL, seller TEXT, price_value REAL, currency TEXT,
+      first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+      evidence_level TEXT NOT NULL, founder_terms_json TEXT NOT NULL DEFAULT '[]',
+      prime_items_json TEXT NOT NULL DEFAULT '[]', evidence_snippets_json TEXT NOT NULL DEFAULT '[]',
+      evidence_score REAL NOT NULL DEFAULT 0, detail_verified INTEGER NOT NULL DEFAULT 0,
+      alert_eligible INTEGER NOT NULL DEFAULT 0, budget_fit TEXT NOT NULL DEFAULT 'unknown',
+      safety_note TEXT NOT NULL, last_scan_id TEXT NOT NULL
+    )
+  `).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_wf_founder_recent ON warframe_founder_listings(last_seen DESC)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_wf_founder_alert ON warframe_founder_listings(alert_eligible,evidence_score DESC,last_seen DESC)`).run();
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS warframe_founder_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, listing_id INTEGER NOT NULL, scan_id TEXT NOT NULL,
+      observed_at TEXT NOT NULL, evidence_level TEXT NOT NULL, evidence_score REAL NOT NULL,
+      alert_eligible INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY(listing_id) REFERENCES warframe_founder_listings(id) ON DELETE CASCADE
+    )
+  `).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_wf_founder_events_time ON warframe_founder_events(observed_at DESC)`).run();
+}
+
 function synthPathKey(r: AnyRow): string {
   return String(r.path_key || `${r.platform}|${r.query_family}|${r.page_label || "seed"}`);
 }
@@ -1099,15 +1133,42 @@ export default {
     }
 
     if (request.method === "GET" && path === "/health") {
-      await ensureV05Tables(env);
+      await ensureV10Tables(env);
       const db = await env.DB.prepare("SELECT COUNT(*) AS n FROM listings").first();
+      const wfDb = await env.DB.prepare("SELECT COUNT(*) AS n FROM warframe_founder_listings").first();
+      const wfLast = await env.DB.prepare("SELECT * FROM warframe_founder_scans ORDER BY finished_at DESC LIMIT 1").first();
       const hist = await historicalStats(env);
       const last = await env.DB.prepare("SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT 1").first();
       return json({
-        ok: true, version: "0.9", listing_count: db?.n ?? 0, historical_count: hist.total,
-        historical_seed_records: hist.tracker_seed_records, last_scan: last ?? null, now: nowIso(),
-        capabilities: ["source_health", "field_provenance", "historical_stats", "comparables", "quality_by_version"],
+        ok: true, version: "1.0", listing_count: db?.n ?? 0, historical_count: hist.total,
+        historical_seed_records: hist.tracker_seed_records, last_scan: last ?? null,
+        warframe_founder_count: wfDb?.n ?? 0, warframe_last_scan: wfLast ?? null, now: nowIso(),
+        capabilities: ["source_health", "field_provenance", "historical_stats", "comparables", "quality_by_version", "multi_game", "warframe_founder"],
       });
+    }
+
+    if (request.method === "GET" && (path === "/v1/warframe/founder/recent" || path === "/v1/warframe/founder/alerts")) {
+      await ensureV10Tables(env);
+      const hours = Math.min(Math.max(Number(url.searchParams.get("hours") || "168"), 1), 24 * 365);
+      const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || "100"), 1), 500);
+      const since = new Date(Date.now() - hours * 3600_000).toISOString();
+      const alertsOnly = path.endsWith("/alerts");
+      const result = await env.DB.prepare(`
+        SELECT platform,url,title,seller,price_value,currency,first_seen,last_seen,evidence_level,
+          founder_terms_json,prime_items_json,evidence_snippets_json,evidence_score,detail_verified,
+          alert_eligible,budget_fit,safety_note,last_scan_id
+        FROM warframe_founder_listings
+        WHERE last_seen>=? AND (?=0 OR alert_eligible=1)
+        ORDER BY alert_eligible DESC,evidence_score DESC,last_seen DESC LIMIT ?
+      `).bind(since, alertsOnly ? 1 : 0, limit).all();
+      const rows = (result.results as AnyRow[]).map((r) => ({
+        ...r,
+        founder_terms: parseArray(r.founder_terms_json),
+        prime_items: parseArray(r.prime_items_json),
+        evidence_snippets: parseArray(r.evidence_snippets_json),
+      }));
+      return json({ since, count: rows.length, listings: rows,
+        caveat: "Claim evidence comes from listing text; authenticity, ownership and transferability are not verified." });
     }
 
     if (request.method === "GET" && path === "/v1/candidates/recent") {
@@ -1122,7 +1183,7 @@ export default {
           l.legacy_hits, l.history_hits, l.discovery_hits, l.resource_hits, l.archetype,
           l.history_richness, l.discovery_headroom, l.resource_richness, l.organic_account_feel,
           l.legacy_collector_value, l.personal_experience_fit, l.collector_priority,
-          l.detector_reason, l.data_confidence, l.security_hint,
+          l.detector_reason, l.data_confidence, l.security_hint, l.is_alert_candidate,
           q.favorite_character_fit, q.identity_verified, q.strict_live, q.verification_level,
           q.extraction_quality, q.favorite_characters_json, q.archetypes_json, q.risk_flags_json,
           q.quality_flags_json, q.detail_verified_at, q.manufactured_hits, q.risk_hits, q.old_alt_hits,
@@ -1409,6 +1470,50 @@ export default {
     }
 
     if (!isAuthorized(request, env)) return unauthorized();
+
+    if (request.method === "POST" && path === "/v1/warframe/founder/batch") {
+      await ensureV10Tables(env);
+      const body = await readJson<AnyRow>(request);
+      const rows = Array.isArray(body.listings) ? body.listings : [];
+      if (!body.scan_id || rows.length > 100) return json({ error: "scan_id_required_and_max_100_listings" }, 400);
+      await env.DB.prepare(`
+        INSERT INTO warframe_founder_scans(id,started_at,finished_at,sources_attempted,listings_found,alert_eligible,errors_json)
+        VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING
+      `).bind(body.scan_id,body.started_at||nowIso(),body.finished_at||nowIso(),body.sources_attempted||0,
+        body.listings_found||rows.length,body.alert_eligible||0,JSON.stringify(body.errors||[])).run();
+      let stored = 0;
+      for (const r of rows) {
+        if (!r.url || !r.title || !["POTENTIAL_LEAD","CLAIM_EVIDENCE"].includes(String(r.evidence_level))) continue;
+        await env.DB.prepare(`
+          INSERT INTO warframe_founder_listings(
+            platform,url,title,seller,price_value,currency,first_seen,last_seen,evidence_level,
+            founder_terms_json,prime_items_json,evidence_snippets_json,evidence_score,detail_verified,
+            alert_eligible,budget_fit,safety_note,last_scan_id
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(url) DO UPDATE SET platform=excluded.platform,title=excluded.title,seller=excluded.seller,
+            price_value=excluded.price_value,currency=excluded.currency,last_seen=excluded.last_seen,
+            evidence_level=excluded.evidence_level,founder_terms_json=excluded.founder_terms_json,
+            prime_items_json=excluded.prime_items_json,evidence_snippets_json=excluded.evidence_snippets_json,
+            evidence_score=excluded.evidence_score,detail_verified=excluded.detail_verified,
+            alert_eligible=excluded.alert_eligible,budget_fit=excluded.budget_fit,
+            safety_note=excluded.safety_note,last_scan_id=excluded.last_scan_id
+        `).bind(
+          r.platform||"Unknown",String(r.url),String(r.title),r.seller??null,r.price_value??null,r.currency??null,
+          r.observed_at||nowIso(),r.observed_at||nowIso(),r.evidence_level,JSON.stringify(r.founder_terms||[]),
+          JSON.stringify(r.prime_items||[]),JSON.stringify(r.evidence_snippets||[]),clamp(Number(r.evidence_score||0),0,100),
+          r.detail_verified?1:0,r.alert_eligible?1:0,r.budget_fit||"unknown",
+          r.safety_note||"Listing claim only; authenticity not verified.",body.scan_id
+        ).run();
+        const listing = await env.DB.prepare("SELECT id FROM warframe_founder_listings WHERE url=?").bind(r.url).first();
+        await env.DB.prepare(`
+          INSERT INTO warframe_founder_events(listing_id,scan_id,observed_at,evidence_level,evidence_score,alert_eligible)
+          VALUES (?,?,?,?,?,?)
+        `).bind(listing?.id,body.scan_id,r.observed_at||nowIso(),r.evidence_level,
+          clamp(Number(r.evidence_score||0),0,100),r.alert_eligible?1:0).run();
+        stored++;
+      }
+      return json({ ok: true, stored, scan_id: body.scan_id }, 201);
+    }
 
     if (request.method === "POST" && path === "/v1/scan/start") {
       const body = await readJson<AnyRow>(request);

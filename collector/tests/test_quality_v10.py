@@ -17,9 +17,9 @@ def epic_adapter(**kwargs):
     return GenericMarketplaceAdapter(**opts)
 
 
-def test_v10_versions_and_worker_api_are_decoupled():
+def test_v10_detector_is_preserved_behind_v1_worker_api():
     assert DETECTOR_VERSION == "v2.7"
-    assert WORKER_API_VERSION == "0.9"
+    assert WORKER_API_VERSION == "1.0"
 
 
 def test_generic_domain_h1_does_not_destroy_rich_card_title_and_identity_can_verify_without_merit():

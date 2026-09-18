@@ -49,6 +49,6 @@ jobs:
         with:
           node-version: '22'
       - name: Install Worker dependencies
-        run: npm install
+        run: npm ci
       - name: Typecheck Worker
         run: npm run typecheck

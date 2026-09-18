@@ -2,8 +2,6 @@ name: Market collector health
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '23 */6 * * *'
 
 jobs:
   health:
@@ -51,8 +49,8 @@ jobs:
 
           print(json.dumps(data, indent=2))
           version = str(data.get('version', 'unknown')).lstrip('v')
-          if not version.startswith('0.9'):
-              raise SystemExit(f'Worker deployment mismatch: expected v0.9, got {version}')
+          if not version.startswith('1.0'):
+              raise SystemExit(f'Worker deployment mismatch: expected v1.0, got {version}')
           last = data.get('last_scan')
           if not last or not last.get('started_at'):
               raise SystemExit('No completed scan has been recorded yet')
@@ -63,5 +61,5 @@ jobs:
           if last.get('status') == 'failed':
               raise SystemExit('Last collector run failed')
           if int(data.get('historical_seed_records') or 0) < 10:
-              raise SystemExit('Historical seed missing or incomplete; the next v0.9 scan will auto-repair it')
+              raise SystemExit('Historical seed missing or incomplete; the next v1.0 scan will auto-repair it')
           PY

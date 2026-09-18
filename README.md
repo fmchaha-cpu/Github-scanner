@@ -1,4 +1,19 @@
-# Genshin Market Tracker v0.10.0
+# Dream Account Market Scanner v1.0.0
+
+Produktionssystem für Genshin-Traumaccounts und separat bewertete Warframe-Founder-Angebote.
+
+- Contabo-VPS als Hauptscanner, ungefähr alle 30 Minuten per systemd.
+- GitHub Actions für CI und manuell startbaren Fallback – kein konkurrierender Zeitplan.
+- Discord-Alerts mit Deduplizierung und ohne erlaubte Mentions.
+- Genshin-Wunschpreis 100–200 und Warframe bis 300 sind weiche Präferenzen. Gute Treffer außerhalb werden weiter gemeldet.
+- Warframe meldet erst dann, wenn eine Detailseite Founder plus mindestens ein exklusives Prime-Item nennt. Das ist Angebots-Evidenz, kein Echtheitsbeweis.
+- Ausschließlich öffentliche Seiten: kein Login-, CAPTCHA-, Rate-Limit- oder Anti-Bot-Bypass.
+
+Installation: [`docs/V1_SERVER_INSTALL_DE.md`](docs/V1_SERVER_INSTALL_DE.md)  
+Architektur: [`docs/V1_ARCHITECTURE_DE.md`](docs/V1_ARCHITECTURE_DE.md)  
+Discord: [`docs/DISCORD_SETUP_DE.md`](docs/DISCORD_SETUP_DE.md)
+
+## Bewährter Genshin-Kern aus v0.10
 
 ## v0.10.0 – Identity + Plausibility
 
@@ -74,26 +89,20 @@ Die v0.8-Funktionen (Worker/Collector Handshake, Historical Stats, passive Candi
 - **ChatGPT/Human Review** = tiefe Pruefung von Identitaet, Seller, Security, persoenlicher Relevanz und auffaelligen Kandidaten.
 - **Excel** = gebuendelter Analyse-/Ranking-Output, nicht Primaerdatenbank.
 
-## Scan-Rhythmus
+## Scan-Rhythmus (v1.0)
 
-Der normale GitHub-Scan laeuft einmal pro Stunde bei Minute 17. Blockierte Quellen werden innerhalb eines Runs frueh abgebrochen; funktionsfaehige Quellen erhalten das Verification-Budget.
+Der VPS-Timer startet ungefähr alle 30 Minuten. Der GitHub-Workflow ist nur ein manueller Fallback. Blockierte Quellen werden nicht umgangen; funktionsfähige Quellen erhalten das Verification-Budget.
 
 ## Upgrade
 
-Siehe [`docs/V09_UPGRADE_DE.md`](docs/V09_UPGRADE_DE.md).
+Siehe [`docs/V1_SERVER_INSTALL_DE.md`](docs/V1_SERVER_INSTALL_DE.md).
 
 Kurzfassung:
 
 1. ZIP-Inhalt ueber das bestehende Repository kopieren. `.git` **nicht** loeschen.
 2. Commit + Push.
-3. PowerShell im Repository:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\deploy_v09.ps1
-```
-
-4. Danach **Genshin market scan** starten. Der Historical-Seed wird bei Bedarf automatisch repariert.
+3. Migration 0006 und Worker v1.0 deployen.
+4. VPS-Service installieren, Secret-Datei ausfüllen und einen kontrollierten Testlauf starten.
 
 ## Grenzen
 
