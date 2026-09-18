@@ -2,7 +2,7 @@ from pathlib import Path
 
 from market_v1.discord import AlertState, listing_payload
 from market_v1.policy import budget_fit, genshin_alert_tier, warframe_alert_tier
-from market_v1.warframe import _candidate_links, analyse_claim
+from market_v1.warframe import _candidate_links, _price, analyse_claim
 
 
 def test_warframe_requires_detail_page_founder_and_prime_item():
@@ -62,3 +62,7 @@ def test_playerup_style_relative_founder_link_is_discovered():
         "https://www.playerup.com/accounts/warframeaccount/threads/founder-grand-master.123/",
         "Founder Grand Master with Excalibur Prime $800",
     )]
+
+
+def test_price_ignores_plain_numbers_without_currency():
+    assert _price("Warframe account level 30 with 500 hours") == (None, None)

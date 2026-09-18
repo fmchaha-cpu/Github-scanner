@@ -39,7 +39,8 @@ def _price(text: str) -> tuple[float | None, str | None]:
             continue
         if value < 10 or value > 100_000:
             continue
-        currency = (prefix or {"$": "USD", "€": "EUR", "£": "GBP"}.get(symbol or "")).upper() or None
+        raw_currency = prefix or {"$": "USD", "€": "EUR", "£": "GBP"}.get(symbol or "")
+        currency = raw_currency.upper() if raw_currency else None
         if currency:
             return value, currency
     return None, None
