@@ -1,5 +1,7 @@
 # Genshin Market Tracker v0.9.2
 
+v0.9.3 Hotfix: CI-safe async batching tests ohne zusaetzliches pytest-asyncio Plugin.
+
 Hybrid-System fuer hohe Markt-Abdeckung, identity-bound Verifikation, historische Preisvergleiche und eine messbare Verbesserungsschleife.
 
 
