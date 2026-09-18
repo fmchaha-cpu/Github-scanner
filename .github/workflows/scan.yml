@@ -2,9 +2,6 @@ name: Genshin market scan
 
 on:
   workflow_dispatch:
-  schedule:
-    # Once per hour. We spend the saved budget on broader pagination and deeper verification.
-    - cron: '17 * * * *'
 
 concurrency:
   group: genshin-market-scan
@@ -62,12 +59,12 @@ jobs:
 
           print(json.dumps(data, indent=2))
           version = str(data.get('version', 'unknown')).lstrip('v')
-          if not version.startswith('0.9'):
+          if not version.startswith('1.0'):
               raise SystemExit(
-                  f"Worker version {version!r} is not compatible with collector v0.10 using Worker API v0.9. "
-                  "Run scripts/deploy_v09.ps1 first."
+                  f"Worker version {version!r} is not compatible with collector v1.0. "
+                  "Deploy the v1.0 Worker and migration first."
               )
-          required = {'source_health', 'field_provenance', 'historical_stats', 'comparables'}
+          required = {'source_health', 'field_provenance', 'historical_stats', 'comparables', 'multi_game', 'warframe_founder'}
           capabilities = set(data.get('capabilities') or [])
           missing = required - capabilities
           if missing:
@@ -80,8 +77,10 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Run tests
         run: python -m pytest tests -q
-      - name: Scan public marketplace pages
+      - name: Fallback scan (Genshin and Warframe)
         env:
           MARKET_API_URL: ${{ secrets.MARKET_API_URL }}
           MARKET_API_TOKEN: ${{ secrets.MARKET_API_TOKEN }}
-        run: python -m genshin_collector.main --config sources.yaml
+          DISCORD_WEBHOOK_GENSHIN: ${{ secrets.DISCORD_WEBHOOK_GENSHIN }}
+          DISCORD_WEBHOOK_WARFRAME: ${{ secrets.DISCORD_WEBHOOK_WARFRAME }}
+        run: python -m market_v1.run --games all

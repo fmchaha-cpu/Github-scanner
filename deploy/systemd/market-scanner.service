@@ -1,0 +1,23 @@
+[Unit]
+Description=Genshin and Warframe market scanner v1.0
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=market-scanner
+Group=market-scanner
+WorkingDirectory=/opt/Github-scanner/collector
+EnvironmentFile=/etc/genshin-scanner.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+ExecStart=/usr/bin/flock -n /var/lib/genshin-scanner/scan.lock /opt/Github-scanner/.venv/bin/python -m market_v1.run --games all
+TimeoutStartSec=25min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/genshin-scanner
+
+[Install]
+WantedBy=multi-user.target

@@ -2,8 +2,6 @@ name: Daily market quality audit
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '37 18 * * *'
 
 jobs:
   audit:
@@ -13,16 +11,33 @@ jobs:
       - name: Fetch quality, trend and parser diagnostics
         env:
           MARKET_API_URL: ${{ secrets.MARKET_API_URL }}
+          MARKET_API_TOKEN: ${{ secrets.MARKET_API_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json, os, urllib.request
+          import json, os, time, urllib.request
 
           base = os.environ['MARKET_API_URL'].rstrip('/')
+          token = os.environ.get('MARKET_API_TOKEN', '').strip()
+          headers = {
+              'Accept': 'application/json',
+              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/153 Safari/537.36',
+          }
+          if token:
+              headers['Authorization'] = f'Bearer {token}'
           def get(path):
-              with urllib.request.urlopen(base + path, timeout=30) as r:
-                  return json.load(r)
+              error = None
+              for attempt in range(1, 4):
+                  try:
+                      request = urllib.request.Request(base + path, headers=headers)
+                      with urllib.request.urlopen(request, timeout=30) as r:
+                          return json.load(r)
+                  except Exception as exc:
+                      error = exc
+                      if attempt < 3:
+                          time.sleep(attempt * 2)
+              raise error
 
           quality = get('/v1/quality/recent?hours=24')
           trends = get('/v1/quality/trends?limit=14')

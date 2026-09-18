@@ -1,7 +1,7 @@
 {
   "name": "genshin-market-api",
   "private": true,
-  "version": "0.9.0",
+  "version": "1.0.0",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "db:migrate:v05": "wrangler d1 execute genshin-market --remote --file=./migrations/0003_historical_comparables.sql",
     "db:migrate:v06": "wrangler d1 execute genshin-market --remote --file=./migrations/0004_observability.sql",
-    "db:migrate:v07": "wrangler d1 execute genshin-market --remote --file=./migrations/0005_source_health_provenance.sql"
+    "db:migrate:v07": "wrangler d1 execute genshin-market --remote --file=./migrations/0005_source_health_provenance.sql",
+    "db:migrate:v10": "wrangler d1 execute genshin-market --remote --file=./migrations/0006_multigame_v1.sql"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "latest",

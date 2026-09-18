@@ -16,7 +16,7 @@ from .adapters.generic import GenericMarketplaceAdapter
 from .models import CoverageRow
 
 
-WORKER_API_VERSION = "0.9"
+WORKER_API_VERSION = "1.0"
 
 
 def _pct(num: int, den: int) -> float:
@@ -383,9 +383,9 @@ async def run(config_path: str):
     if _version_major_minor(worker_version) != expected_worker:
         raise SystemExit(
             f"Worker version mismatch: collector expects {expected_worker}, Worker reports {worker_version}. "
-            "Deploy scripts/deploy_v09.ps1 first; collector v0.10 intentionally reuses Worker API v0.9."
+            "Deploy the v1.0 Worker and migration 0006 before running the collector."
         )
-    required_capabilities = {"source_health", "field_provenance", "historical_stats", "comparables"}
+    required_capabilities = {"source_health", "field_provenance", "historical_stats", "comparables", "multi_game", "warframe_founder"}
     worker_capabilities = {str(x) for x in (worker_health.get("capabilities") or [])}
     missing_capabilities = sorted(required_capabilities - worker_capabilities)
     if missing_capabilities:
@@ -417,7 +417,7 @@ async def run(config_path: str):
         except Exception as exc:
             historical_seed_state["error"] = f"{type(exc).__name__}: {exc}"
 
-    await api.start_scan(scan_id, __version__, notes="scheduled collector v0.10 identity-consensus+price-plausibility+comparable-telemetry")
+    await api.start_scan(scan_id, __version__, notes="v1.0 VPS collector; identity-consensus+price-plausibility+comparable-telemetry")
 
     source_health_error: str | None = None
     try:

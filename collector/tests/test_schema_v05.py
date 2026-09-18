@@ -62,3 +62,16 @@ def test_v06_observability_migration_applies_and_has_diagnostics_columns():
         "scan_run_id", "listing_id", "platform", "verification_reason", "fetch_mode", "fallback_reason",
         "identity_verified", "strict_live", "extraction_quality", "quality_flags_json",
     } <= event_cols
+
+
+def test_v10_warframe_migration_is_separate_and_idempotent():
+    root = Path(__file__).resolve().parents[2] / "cloudflare"
+    db = sqlite3.connect(":memory:")
+    db.executescript((root / "schema.sql").read_text(encoding="utf-8"))
+    migration = (root / "migrations/0006_multigame_v1.sql").read_text(encoding="utf-8")
+    db.executescript(migration)
+    db.executescript(migration)
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"warframe_founder_scans", "warframe_founder_listings", "warframe_founder_events"} <= tables
+    genshin_cols = {r[1] for r in db.execute("PRAGMA table_info(listings)")}
+    assert "evidence_level" not in genshin_cols

@@ -22,13 +22,19 @@ jobs:
           base = os.environ['MARKET_API_URL'].rstrip('/')
           token = os.environ['MARKET_API_TOKEN']
 
-          with urllib.request.urlopen(base + '/health', timeout=30) as r:
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/json',
+              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/153 Safari/537.36',
+          }
+          health_req = urllib.request.Request(base + '/health', headers=headers)
+          with urllib.request.urlopen(health_req, timeout=30) as r:
               health = json.load(r)
           print('Worker health before import:')
           print(json.dumps(health, indent=2))
           version = str(health.get('version', 'unknown')).lstrip('v')
-          if not version.startswith('0.9'):
-              raise SystemExit(f'Worker {version!r} is not v0.9; deploy scripts/deploy_v09.ps1 first')
+          if not version.startswith('1.0'):
+              raise SystemExit(f'Worker {version!r} is not v1.0; deploy the v1.0 Worker first')
 
           payload = json.loads(pathlib.Path('historical_seed_tracker_v26.json').read_text(encoding='utf-8'))
           expected = len(payload.get('records') or [])

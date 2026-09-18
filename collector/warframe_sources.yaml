@@ -1,0 +1,33 @@
+# Public pages only. No login, CAPTCHA, rate-limit or anti-bot bypass.
+# Founder leads are stored broadly; Discord requires exact Founder + Prime-item text on a detail page.
+timeout_seconds: 25
+preferred_budget_max: 300
+hard_budget_cap: null
+
+sources:
+  - name: PlayerAuctions
+    enabled: true
+    use_browser_fallback: true
+    url: https://www.playerauctions.com/warframe-account/
+    detail_limit: 6
+    request_delay_seconds: 1.0
+    detail_patterns:
+      - '/warframe-account/\d+a(?:%21|!|[-/])?'
+
+  - name: EpicNPC
+    enabled: true
+    use_browser_fallback: true
+    url: https://www.epicnpc.com/forums/warframe-accounts.735/
+    detail_limit: 6
+    request_delay_seconds: 1.0
+    detail_patterns:
+      - '/threads/'
+
+  - name: PlayerUp
+    enabled: true
+    use_browser_fallback: true
+    url: https://www.playerup.com/accounts/warframeaccount/
+    detail_limit: 6
+    request_delay_seconds: 1.0
+    detail_patterns:
+      - '/threads/'
