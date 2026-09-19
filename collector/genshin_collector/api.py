@@ -61,12 +61,15 @@ class MarketApi:
         batch_size: int = 8,
         observation_policy: str = "full",
     ):
-        # D1 listing upserts are intentionally write-heavy. Small chunks keep each
-        # Cloudflare request comfortably below client/edge timeouts and avoid
-        # retrying an ambiguous partially-processed write after a ReadTimeout.
+        # Small chunks keep each Cloudflare request comfortably below client/edge
+        # timeouts and avoid retrying an ambiguous partial batch after a ReadTimeout.
         batch_size = max(1, min(int(batch_size), 20))
         total = 0
         changed = 0
+        unchanged_skipped = 0
+        heartbeat_updates = 0
+        metadata_only_updates = 0
+        lifecycle_writes = 0
         for i in range(0, len(rows), batch_size):
             chunk = rows[i:i+batch_size]
             res = await self._post("/v1/listings/batch", {
@@ -76,7 +79,20 @@ class MarketApi:
             })
             total += res.get("received", len(chunk))
             changed += res.get("changed", 0)
-        return {"ok": True, "received": total, "changed": changed, "observation_policy": observation_policy}
+            unchanged_skipped += res.get("unchanged_skipped", 0)
+            heartbeat_updates += res.get("heartbeat_updates", 0)
+            metadata_only_updates += res.get("metadata_only_updates", 0)
+            lifecycle_writes += res.get("lifecycle_writes", 0)
+        return {
+            "ok": True,
+            "received": total,
+            "changed": changed,
+            "unchanged_skipped": unchanged_skipped,
+            "heartbeat_updates": heartbeat_updates,
+            "metadata_only_updates": metadata_only_updates,
+            "lifecycle_writes": lifecycle_writes,
+            "observation_policy": observation_policy,
+        }
 
     async def send_system_event(
         self,

@@ -1,4 +1,4 @@
-# Dream Account Market Scanner v1.1.1
+# Dream Account Market Scanner v1.1.2
 
 Produktionssystem für Genshin-Traumaccounts und separat bewertete Warframe-Founder-Angebote.
 
@@ -8,6 +8,15 @@ Produktionssystem für Genshin-Traumaccounts und separat bewertete Warframe-Foun
 - Genshin-Wunschpreis 100–200 und Warframe bis 300 sind weiche Präferenzen. Gute Treffer außerhalb werden weiter gemeldet.
 - Warframe meldet erst dann, wenn eine Detailseite Founder plus mindestens ein exklusives Prime-Item nennt. Das ist Angebots-Evidenz, kein Echtheitsbeweis.
 - Ausschließlich öffentliche Seiten: kein Login-, CAPTCHA-, Rate-Limit- oder Anti-Bot-Bypass.
+
+## v1.1.2 – D1-Schreiboptimierung
+
+- Unveränderte Listing-Daten werden nicht mehr bei jedem Scan vollständig neu geschrieben.
+- Fast-Scans überspringen unveränderte Listings vollständig; Full-Scans schreiben höchstens einmal pro Stunde ein kompaktes Lebenszeichen.
+- Snapshots, Kandidaten- und Verifikationsereignisse entstehen nur bei neuen oder tatsächlich geänderten Listings.
+- Dynamische Kategoriepfade bleiben als kompakte Discovery-Metadaten erhalten. Die schreibintensive Verschwinden-Verfolgung bleibt auf exakte manuelle Listing-URLs beschränkt.
+- Der überholte doppelte Eintrag jeder Coverage-Beobachtung entfällt; `coverage_paths` bleibt die maßgebliche Tabelle.
+- API-Zähler zeigen geänderte, übersprungene und per Heartbeat aktualisierte Listings. Die Erkennungs- und Alert-Regeln bleiben unverändert.
 
 Installation: [`docs/V1_SERVER_INSTALL_DE.md`](docs/V1_SERVER_INSTALL_DE.md)  
 Architektur: [`docs/V1_ARCHITECTURE_DE.md`](docs/V1_ARCHITECTURE_DE.md)  
@@ -89,9 +98,9 @@ Die v0.8-Funktionen (Worker/Collector Handshake, Historical Stats, passive Candi
 - **ChatGPT/Human Review** = tiefe Pruefung von Identitaet, Seller, Security, persoenlicher Relevanz und auffaelligen Kandidaten.
 - **Excel** = gebuendelter Analyse-/Ranking-Output, nicht Primaerdatenbank.
 
-## Scan-Rhythmus (v1.1)
+## Scan-Rhythmus (v1.1.2)
 
-Ein leichter Kernscan prüft relevante Marktseiten ungefähr alle 10 Minuten. Der vollständige Scan läuft ungefähr alle 30 Minuten und bleibt für breite Abdeckung, Verschwinden-Erkennung und Qualitäts-Snapshots zuständig. Unveränderte Fast-Scan-Beobachtungen erzeugen keine zusätzlichen Rohtext-Snapshots. Der GitHub-Workflow ist nur ein manueller Fallback. Blockierte Quellen werden nicht umgangen.
+Ein leichter Kernscan prüft relevante Marktseiten ungefähr alle 10 Minuten. Der vollständige Scan läuft ungefähr alle 30 Minuten und bleibt für breite Abdeckung, Verschwinden-Erkennung und Qualitäts-Snapshots zuständig. Unveränderte Fast-Scan-Beobachtungen erzeugen keine Listing-Schreibvorgänge. Bei Full-Scans wird `last_seen` für unveränderte Listings höchstens einmal pro Stunde aktualisiert, sodass das Drei-Stunden-Aktivitätsfenster erhalten bleibt. Der GitHub-Workflow ist nur ein manueller Fallback. Blockierte Quellen werden nicht umgangen.
 
 ## Upgrade
 
@@ -101,7 +110,7 @@ Kurzfassung:
 
 1. ZIP-Inhalt ueber das bestehende Repository kopieren. `.git` **nicht** loeschen.
 2. Commit + Push.
-3. Migration 0006 und Worker v1.1 deployen.
+3. Worker v1.1.2 deployen; für dieses Update ist keine neue D1-Migration nötig.
 4. VPS-Service installieren, Secret-Datei ausfüllen und einen kontrollierten Testlauf starten.
 
 ## Grenzen

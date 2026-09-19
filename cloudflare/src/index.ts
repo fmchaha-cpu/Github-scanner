@@ -5,6 +5,10 @@ export interface Env {
 
 type AnyRow = Record<string, any>;
 
+// Keep active listings fresh enough for the three-hour candidate window without rewriting every
+// unchanged row on every 30-minute full scan. Fast scans persist only new or changed observations.
+const LISTING_HEARTBEAT_MINUTES = 60;
+
 const HISTORICAL_WEIGHTS: Record<string, number> = {
   SOLD_CONFIRMED: 1.00,
   SOLD_CLAIMED: 0.65,
@@ -435,6 +439,70 @@ function synthPathKey(r: AnyRow): string {
   return String(r.path_key || `${r.platform}|${r.query_family}|${r.page_label || "seed"}`);
 }
 
+function nullableNumberChanged(stored: unknown, incoming: unknown): boolean {
+  if (stored == null && incoming == null) return false;
+  if (stored == null || incoming == null) return true;
+  return Number(stored) !== Number(incoming);
+}
+
+function nullableStringChanged(stored: unknown, incoming: unknown): boolean {
+  return (stored == null ? null : String(stored)) !== (incoming == null ? null : String(incoming));
+}
+
+function coalescedNumberChanged(stored: unknown, incoming: unknown): boolean {
+  return incoming == null ? false : nullableNumberChanged(stored, incoming);
+}
+
+function coalescedStringChanged(stored: unknown, incoming: unknown): boolean {
+  return incoming == null ? false : nullableStringChanged(stored, incoming);
+}
+
+function canonicalJson(value: unknown): string {
+  let parsed: any = value;
+  if (typeof value === "string") {
+    try { parsed = JSON.parse(value); } catch { return JSON.stringify(value); }
+  }
+  const normalize = (item: any): any => {
+    if (Array.isArray(item)) {
+      return item.map(normalize).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    }
+    if (item && typeof item === "object") {
+      return Object.fromEntries(Object.keys(item).sort().map((key) => [key, normalize(item[key])]));
+    }
+    return item;
+  };
+  return JSON.stringify(normalize(parsed)) ?? "undefined";
+}
+
+function jsonChanged(stored: unknown, incoming: unknown): boolean {
+  return canonicalJson(stored) !== canonicalJson(incoming);
+}
+
+function isExactLifecyclePath(pathKey: string): boolean {
+  return pathKey.includes("|manual_exact_url|") && pathKey.endsWith("|exact");
+}
+
+async function recordExactLifecyclePaths(
+  env: Env, listingId: any, scanRunId: string, discoveryPaths: string[], observedAt: string,
+) {
+  let writes = 0;
+  for (const pathKey of discoveryPaths.filter(isExactLifecyclePath)) {
+    const seen = await env.DB.prepare(`
+      INSERT OR IGNORE INTO listing_seen_paths(listing_id, scan_run_id, path_key, observed_at)
+      VALUES (?,?,?,?)
+    `).bind(listingId, scanRunId, pathKey, observedAt).run();
+    writes += Number((seen as any).meta?.changes || 0);
+    const state = await env.DB.prepare(`
+      INSERT INTO listing_path_state(listing_id, path_key, first_seen, last_seen, last_checked, miss_count, last_result)
+      VALUES (?,?,?,?,?,0,'seen')
+      ON CONFLICT(listing_id,path_key) DO UPDATE SET
+        last_seen=excluded.last_seen, last_checked=excluded.last_checked, miss_count=0, last_result='seen'
+    `).bind(listingId, pathKey, observedAt, observedAt, observedAt).run();
+    writes += Number((state as any).meta?.changes || 0);
+  }
+  return writes;
+}
+
 async function recordStatusEvent(env: Env, listingId: any, oldStatus: any, newStatus: string, confidence: number, evidence: string | null, scanRunId: string | null) {
   if (String(oldStatus || "") === newStatus) return;
   await env.DB.prepare(`
@@ -444,19 +512,157 @@ async function recordStatusEvent(env: Env, listingId: any, oldStatus: any, newSt
 }
 
 async function upsertListing(env: Env, o: AnyRow, scanRunId: string, observationPolicy: "full" | "changes_only" = "full") {
-  const existing = await env.DB.prepare(
-    "SELECT id, title, raw_hash, price_value, currency, availability, seller FROM listings WHERE url = ?"
-  ).bind(o.url).first();
+  const existing = await env.DB.prepare(`
+    SELECT l.*,
+      q.listing_id AS quality_row_id,
+      q.favorite_character_fit AS q_favorite_character_fit,
+      q.identity_verified AS q_identity_verified, q.strict_live AS q_strict_live,
+      q.verification_level AS q_verification_level, q.extraction_quality AS q_extraction_quality,
+      q.favorite_characters_json AS q_favorite_characters_json, q.archetypes_json AS q_archetypes_json,
+      q.risk_flags_json AS q_risk_flags_json, q.quality_flags_json AS q_quality_flags_json,
+      q.manufactured_hits AS q_manufactured_hits, q.risk_hits AS q_risk_hits,
+      q.old_alt_hits AS q_old_alt_hits,
+      v.listing_id AS verification_row_id, v.verification_reason AS v_verification_reason,
+      v.parser_strategy AS v_parser_strategy, v.detail_fetch_mode AS v_detail_fetch_mode,
+      v.detail_fetch_fallback_reason AS v_detail_fetch_fallback_reason,
+      v.detail_http_status AS v_detail_http_status, v.detail_html_bytes AS v_detail_html_bytes,
+      v.detail_blocked_signals_json AS v_detail_blocked_signals_json,
+      p.listing_id AS provenance_row_id, p.field_sources_json AS p_field_sources_json,
+      m.listing_id AS market_meta_row_id, m.market_status AS m_market_status,
+      m.status_confidence AS m_status_confidence, m.status_evidence AS m_status_evidence,
+      m.relisting_fingerprint AS m_relisting_fingerprint,
+      m.limited_c6_characters_json AS m_limited_c6_characters_json,
+      m.c6r1_characters_json AS m_c6r1_characters_json,
+      m.character_tags_json AS m_character_tags_json,
+      m.discovery_paths_json AS m_discovery_paths_json
+    FROM listings l
+    LEFT JOIN listing_quality q ON q.listing_id=l.id
+    LEFT JOIN listing_verification_meta v ON v.listing_id=l.id
+    LEFT JOIN listing_field_provenance p ON p.listing_id=l.id
+    LEFT JOIN listing_market_meta m ON m.listing_id=l.id
+    WHERE l.url=?
+  `).bind(o.url).first() as AnyRow | null;
 
-  const rawChanged = !existing || existing.raw_hash !== o.raw_hash || existing.price_value !== o.price_value || existing.availability !== o.availability || existing.seller !== o.seller;
-  const materialChanged = !existing || String(existing.title || "") !== String(o.title || "") ||
-    (existing.price_value ?? null) !== (o.price_value ?? null) ||
-    (existing.currency ?? null) !== (o.currency ?? null) ||
-    (existing.availability ?? null) !== (o.availability ?? null) ||
-    (existing.seller ?? null) !== (o.seller ?? null);
-  const changed = observationPolicy === "changes_only" ? materialChanged : rawChanged;
-  const firstSeen = existing ? undefined : (o.observed_at || nowIso());
-  const lastChanged = changed ? (o.observed_at || nowIso()) : undefined;
+  const observedAt = String(o.observed_at || nowIso());
+  const incomingPaths = Array.from(new Set(parseArray(o.discovery_paths).filter(Boolean)));
+  const existingPaths = parseArray(existing?.m_discovery_paths_json);
+  const mergedPaths = Array.from(new Set([...existingPaths, ...incomingPaths]));
+  const discoveryPathsExpanded = mergedPaths.length > existingPaths.length;
+
+  const oldStatus = existing?.m_market_status ? String(existing.m_market_status) : null;
+  let newStatus = String(o.market_status || (o.strict_live ? "STRICT_LIVE" : "ACTIVE_UNCONFIRMED"));
+  // Do not downgrade a strong historical annotation just because an archived page appears in an index again.
+  if (["SOLD_CONFIRMED", "SOLD_CLAIMED", "RISK_CONTAMINATED"].includes(oldStatus || "") && newStatus === "ACTIVE_UNCONFIRMED") {
+    newStatus = oldStatus!;
+  }
+  const statusConfidence = Number(o.status_confidence ?? (o.strict_live ? 0.97 : 0.6));
+  const statusEvidence = String(o.status_evidence || "collector_observation");
+
+  // A hash match catches the common unchanged case. The explicit field comparisons keep detector,
+  // verification and market metadata correct when collector logic changes without changing page text.
+  const rawChanged = !existing || !existing.raw_hash || !o.raw_hash || String(existing.raw_hash) !== String(o.raw_hash);
+  const materialChanged = !existing ||
+    nullableStringChanged(existing.external_id, o.external_id ?? null) ||
+    nullableStringChanged(existing.title, o.title) ||
+    coalescedStringChanged(existing.seller, o.seller) ||
+    coalescedStringChanged(existing.server, o.server) ||
+    coalescedNumberChanged(existing.ar, o.ar) ||
+    coalescedNumberChanged(existing.price_value, o.price_value) ||
+    coalescedStringChanged(existing.currency, o.currency) ||
+    coalescedStringChanged(existing.availability, o.availability) ||
+    Number(existing.instant_delivery || 0) !== (o.instant_delivery ? 1 : 0) ||
+    coalescedStringChanged(existing.after_sale_protection, o.after_sale_protection);
+  const scoringChanged = !existing ||
+    nullableNumberChanged(existing.data_confidence, o.data_confidence ?? null) ||
+    nullableNumberChanged(existing.security_hint, o.security_hint ?? null) ||
+    nullableNumberChanged(existing.limited_c6_count, o.limited_c6_count ?? 0) ||
+    nullableNumberChanged(existing.c6r1_count, o.c6r1_count ?? 0) ||
+    Number(existing.multi_c6 || 0) !== (o.multi_c6 ? 1 : 0) ||
+    nullableNumberChanged(existing.primogems, o.primogems ?? null) ||
+    nullableNumberChanged(existing.intertwined, o.intertwined ?? null) ||
+    nullableNumberChanged(existing.limited_pulls, o.limited_pulls ?? null) ||
+    nullableNumberChanged(existing.legacy_hits, o.legacy_hits ?? 0) ||
+    nullableNumberChanged(existing.history_hits, o.history_hits ?? 0) ||
+    nullableNumberChanged(existing.discovery_hits, o.discovery_hits ?? 0) ||
+    nullableNumberChanged(existing.resource_hits, o.resource_hits ?? 0) ||
+    nullableStringChanged(existing.archetype, o.archetype ?? null) ||
+    nullableNumberChanged(existing.history_richness, o.history_richness ?? null) ||
+    nullableNumberChanged(existing.discovery_headroom, o.discovery_headroom ?? null) ||
+    nullableNumberChanged(existing.resource_richness, o.resource_richness ?? null) ||
+    nullableNumberChanged(existing.organic_account_feel, o.organic_account_feel ?? null) ||
+    nullableNumberChanged(existing.legacy_collector_value, o.legacy_collector_value ?? null) ||
+    nullableNumberChanged(existing.personal_experience_fit, o.personal_experience_fit ?? null) ||
+    nullableNumberChanged(existing.collector_priority, o.collector_priority ?? 0) ||
+    nullableStringChanged(existing.detector_reason, o.detector_reason ?? null) ||
+    Number(existing.is_candidate || 0) !== (o.is_candidate ? 1 : 0) ||
+    Number(existing.is_alert_candidate || 0) !== (o.is_alert_candidate ? 1 : 0);
+  const qualityChanged = !existing ||
+    nullableNumberChanged(existing.q_favorite_character_fit, o.favorite_character_fit ?? null) ||
+    Number(existing.q_identity_verified || 0) !== (o.identity_verified ? 1 : 0) ||
+    Number(existing.q_strict_live || 0) !== (o.strict_live ? 1 : 0) ||
+    nullableStringChanged(existing.q_verification_level, o.verification_level ?? "card") ||
+    nullableNumberChanged(existing.q_extraction_quality, o.extraction_quality ?? null) ||
+    jsonChanged(existing.q_favorite_characters_json, o.favorite_character_names ?? []) ||
+    jsonChanged(existing.q_archetypes_json, o.archetypes ?? []) ||
+    jsonChanged(existing.q_risk_flags_json, o.risk_flags ?? []) ||
+    jsonChanged(existing.q_quality_flags_json, o.quality_flags ?? []) ||
+    nullableNumberChanged(existing.q_manufactured_hits, o.manufactured_hits ?? 0) ||
+    nullableNumberChanged(existing.q_risk_hits, o.risk_hits ?? 0) ||
+    nullableNumberChanged(existing.q_old_alt_hits, o.old_alt_hits ?? 0);
+  const verificationChanged = !existing ||
+    nullableStringChanged(existing.v_verification_reason, o.verification_reason ?? null) ||
+    nullableStringChanged(existing.v_parser_strategy, o.parser_strategy ?? null) ||
+    nullableStringChanged(existing.v_detail_fetch_mode, o.detail_fetch_mode ?? null) ||
+    nullableStringChanged(existing.v_detail_fetch_fallback_reason, o.detail_fetch_fallback_reason ?? null) ||
+    nullableNumberChanged(existing.v_detail_http_status, o.detail_http_status ?? null) ||
+    nullableNumberChanged(existing.v_detail_html_bytes, o.detail_html_bytes ?? null) ||
+    jsonChanged(existing.v_detail_blocked_signals_json, o.detail_blocked_signals ?? []);
+  const marketMetaChanged = !existing ||
+    nullableStringChanged(existing.m_market_status, newStatus) ||
+    nullableNumberChanged(existing.m_status_confidence, statusConfidence) ||
+    nullableStringChanged(existing.m_status_evidence, statusEvidence) ||
+    nullableStringChanged(existing.m_relisting_fingerprint, o.relisting_fingerprint ?? null) ||
+    jsonChanged(existing.m_limited_c6_characters_json, o.limited_c6_characters ?? []) ||
+    jsonChanged(existing.m_c6r1_characters_json, o.c6r1_characters ?? []) ||
+    jsonChanged(existing.m_character_tags_json, o.character_tags ?? []);
+  const provenanceChanged = !existing || jsonChanged(existing.p_field_sources_json, o.field_sources ?? {});
+  const supportingStateMissing = Boolean(existing && (
+    existing.quality_row_id == null || existing.verification_row_id == null ||
+    existing.provenance_row_id == null || existing.market_meta_row_id == null
+  ));
+  // Fast scans wait for the next full scan before persisting raw-text-only or fetch-telemetry-only
+  // drift. Material, detector, quality and market changes still persist immediately.
+  const fullScanDetailChanged = observationPolicy === "full" && (rawChanged || verificationChanged);
+  const changed = !existing || fullScanDetailChanged || materialChanged || scoringChanged || qualityChanged ||
+    marketMetaChanged || provenanceChanged || supportingStateMissing;
+
+  if (existing && !changed) {
+    let metadataOnlyUpdates = 0;
+    if (discoveryPathsExpanded) {
+      const metadataResult = await env.DB.prepare(`
+        UPDATE listing_market_meta SET discovery_paths_json=? WHERE listing_id=?
+      `).bind(JSON.stringify(mergedPaths), existing.id).run();
+      metadataOnlyUpdates = Number((metadataResult as any).meta?.changes || 0);
+    }
+
+    let heartbeatUpdates = 0;
+    let lifecycleWrites = 0;
+    if (observationPolicy === "full") {
+      const heartbeat = await env.DB.prepare(`
+        UPDATE listings SET last_seen=?, last_scan_run_id=?
+        WHERE id=? AND (last_seen IS NULL OR datetime(last_seen) <= datetime(?, ?))
+      `).bind(observedAt, scanRunId, existing.id, observedAt, `-${LISTING_HEARTBEAT_MINUTES} minutes`).run();
+      heartbeatUpdates = Number((heartbeat as any).meta?.changes || 0);
+      lifecycleWrites = await recordExactLifecyclePaths(env, existing.id, scanRunId, incomingPaths, observedAt);
+    }
+    return {
+      id: existing.id, changed: false, unchangedSkipped: 1,
+      heartbeatUpdates, metadataOnlyUpdates, lifecycleWrites,
+    };
+  }
+
+  const firstSeen = existing ? undefined : observedAt;
+  const lastChanged = observedAt;
 
   await env.DB.prepare(`
     INSERT INTO listings (
@@ -492,8 +698,8 @@ async function upsertListing(env: Env, o: AnyRow, scanRunId: string, observation
     o.platform, o.external_id ?? null, o.url, o.title, o.seller ?? null, o.server ?? null,
     o.ar ?? null, o.price_value ?? null, o.currency ?? null, o.availability ?? null,
     o.instant_delivery ? 1 : 0, o.after_sale_protection ?? null,
-    firstSeen ?? o.observed_at ?? nowIso(), o.observed_at ?? nowIso(),
-    lastChanged ?? o.observed_at ?? nowIso(), o.raw_text ?? null, o.raw_hash ?? null,
+    firstSeen ?? observedAt, observedAt,
+    lastChanged, o.raw_text ?? null, o.raw_hash ?? null,
     o.data_confidence ?? null, o.security_hint ?? null, o.limited_c6_count ?? 0,
     o.c6r1_count ?? 0, o.multi_c6 ? 1 : 0, o.primogems ?? null, o.intertwined ?? null,
     o.limited_pulls ?? null, o.legacy_hits ?? 0, o.history_hits ?? 0, o.discovery_hits ?? 0,
@@ -508,13 +714,11 @@ async function upsertListing(env: Env, o: AnyRow, scanRunId: string, observation
   if (!row) throw new Error("listing upsert did not return an id");
   const listingId = row.id;
 
-  if (observationPolicy === "full" || changed) {
-    await env.DB.prepare(`
-      INSERT INTO listing_snapshots(listing_id, observed_at, price_value, currency, availability, seller, raw_hash, raw_text, changed)
-      VALUES (?,?,?,?,?,?,?,?,?)
-    `).bind(listingId, o.observed_at ?? nowIso(), o.price_value ?? null, o.currency ?? null,
-      o.availability ?? null, o.seller ?? null, o.raw_hash ?? null, o.raw_text ?? null, changed ? 1 : 0).run();
-  }
+  await env.DB.prepare(`
+    INSERT INTO listing_snapshots(listing_id, observed_at, price_value, currency, availability, seller, raw_hash, raw_text, changed)
+    VALUES (?,?,?,?,?,?,?,?,1)
+  `).bind(listingId, observedAt, o.price_value ?? null, o.currency ?? null,
+    o.availability ?? null, o.seller ?? null, o.raw_hash ?? null, o.raw_text ?? null).run();
 
   await env.DB.prepare(`
     INSERT INTO listing_quality(
@@ -531,7 +735,7 @@ async function upsertListing(env: Env, o: AnyRow, scanRunId: string, observation
       detail_verified_at=excluded.detail_verified_at, manufactured_hits=excluded.manufactured_hits,
       risk_hits=excluded.risk_hits, old_alt_hits=excluded.old_alt_hits
   `).bind(
-    listingId, o.observed_at ?? nowIso(), o.favorite_character_fit ?? null,
+    listingId, observedAt, o.favorite_character_fit ?? null,
     o.identity_verified ? 1 : 0, o.strict_live ? 1 : 0, o.verification_level ?? "card",
     o.extraction_quality ?? null, JSON.stringify(o.favorite_character_names ?? []),
     JSON.stringify(o.archetypes ?? []), JSON.stringify(o.risk_flags ?? []),
@@ -550,7 +754,7 @@ async function upsertListing(env: Env, o: AnyRow, scanRunId: string, observation
       detail_fetch_fallback_reason=excluded.detail_fetch_fallback_reason, detail_http_status=excluded.detail_http_status,
       detail_html_bytes=excluded.detail_html_bytes, detail_blocked_signals_json=excluded.detail_blocked_signals_json
   `).bind(
-    listingId, o.observed_at ?? nowIso(), o.verification_reason ?? null, o.parser_strategy ?? null,
+    listingId, observedAt, o.verification_reason ?? null, o.parser_strategy ?? null,
     o.detail_fetch_mode ?? null, o.detail_fetch_fallback_reason ?? null, o.detail_http_status ?? null,
     o.detail_html_bytes ?? null, JSON.stringify(o.detail_blocked_signals ?? [])
   ).run();
@@ -558,18 +762,18 @@ async function upsertListing(env: Env, o: AnyRow, scanRunId: string, observation
   await env.DB.prepare(`
     INSERT INTO listing_field_provenance(listing_id,updated_at,field_sources_json) VALUES (?,?,?)
     ON CONFLICT(listing_id) DO UPDATE SET updated_at=excluded.updated_at, field_sources_json=excluded.field_sources_json
-  `).bind(listingId, o.observed_at ?? nowIso(), JSON.stringify(o.field_sources ?? {})).run();
+  `).bind(listingId, observedAt, JSON.stringify(o.field_sources ?? {})).run();
 
   // Keep every deep-verification attempt as an event, not only the latest state.
   // This allows us to measure candidate/calibration success rates and parser regressions over time.
-  if ((observationPolicy === "full" || changed) && (o.verification_reason || o.verification_level === "detail")) {
+  if (o.verification_reason || o.verification_level === "detail") {
     await env.DB.prepare(`
       INSERT INTO verification_events(
         scan_run_id,listing_id,platform,observed_at,verification_reason,fetch_mode,fallback_reason,http_status,
         html_bytes,blocked_signals_json,identity_verified,strict_live,extraction_quality,quality_flags_json
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).bind(
-      scanRunId,listingId,o.platform,o.observed_at??nowIso(),o.verification_reason??null,o.detail_fetch_mode??null,
+      scanRunId,listingId,o.platform,observedAt,o.verification_reason??null,o.detail_fetch_mode??null,
       o.detail_fetch_fallback_reason??null,o.detail_http_status??null,o.detail_html_bytes??null,
       JSON.stringify(o.detail_blocked_signals??[]),o.identity_verified?1:0,o.strict_live?1:0,
       o.extraction_quality??null,JSON.stringify(o.quality_flags??[])
@@ -579,20 +783,10 @@ async function upsertListing(env: Env, o: AnyRow, scanRunId: string, observation
         scan_run_id,listing_id,platform,observed_at,verification_reason,field_sources_json
       ) VALUES (?,?,?,?,?,?)
     `).bind(
-      scanRunId,listingId,o.platform,o.observed_at??nowIso(),o.verification_reason??null,
+      scanRunId,listingId,o.platform,observedAt,o.verification_reason??null,
       JSON.stringify(o.field_sources??{})
     ).run();
   }
-
-  const oldMeta = await env.DB.prepare("SELECT market_status FROM listing_market_meta WHERE listing_id=?").bind(listingId).first();
-  let newStatus = String(o.market_status || (o.strict_live ? "STRICT_LIVE" : "ACTIVE_UNCONFIRMED"));
-  const oldStatus = oldMeta?.market_status ? String(oldMeta.market_status) : null;
-  // Do not downgrade a strong historical annotation just because an archived page appears in an index again.
-  if (["SOLD_CONFIRMED", "SOLD_CLAIMED", "RISK_CONTAMINATED"].includes(oldStatus || "") && newStatus === "ACTIVE_UNCONFIRMED") {
-    newStatus = oldStatus!;
-  }
-  const statusConfidence = Number(o.status_confidence ?? (o.strict_live ? 0.97 : 0.6));
-  const statusEvidence = String(o.status_evidence || "collector_observation");
 
   await env.DB.prepare(`
     INSERT INTO listing_market_meta(
@@ -611,35 +805,29 @@ async function upsertListing(env: Env, o: AnyRow, scanRunId: string, observation
       character_tags_json=excluded.character_tags_json,
       discovery_paths_json=excluded.discovery_paths_json
   `).bind(
-    listingId, newStatus, statusConfidence, statusEvidence, o.observed_at ?? nowIso(),
-    newStatus === "EXPIRED_REMOVED" ? (o.observed_at ?? nowIso()) : null,
+    listingId, newStatus, statusConfidence, statusEvidence, observedAt,
+    newStatus === "EXPIRED_REMOVED" ? observedAt : null,
     o.relisting_fingerprint ?? null, JSON.stringify(o.limited_c6_characters ?? []),
-    JSON.stringify(o.c6r1_characters ?? []), JSON.stringify(o.character_tags ?? []), JSON.stringify(o.discovery_paths ?? [])
+    JSON.stringify(o.c6r1_characters ?? []), JSON.stringify(o.character_tags ?? []), JSON.stringify(mergedPaths)
   ).run();
   await recordStatusEvent(env, listingId, oldStatus, newStatus, statusConfidence, statusEvidence, scanRunId);
 
-  for (const pathKey of (o.discovery_paths ?? [])) {
-    await env.DB.prepare(`
-      INSERT OR IGNORE INTO listing_seen_paths(listing_id, scan_run_id, path_key, observed_at)
-      VALUES (?,?,?,?)
-    `).bind(listingId, scanRunId, String(pathKey), o.observed_at ?? nowIso()).run();
-    await env.DB.prepare(`
-      INSERT INTO listing_path_state(listing_id, path_key, first_seen, last_seen, last_checked, miss_count, last_result)
-      VALUES (?,?,?,?,?,0,'seen')
-      ON CONFLICT(listing_id,path_key) DO UPDATE SET
-        last_seen=excluded.last_seen, last_checked=excluded.last_checked, miss_count=0, last_result='seen'
-    `).bind(listingId, String(pathKey), o.observed_at ?? nowIso(), o.observed_at ?? nowIso(), o.observed_at ?? nowIso()).run();
-  }
+  const lifecycleWrites = observationPolicy === "full"
+    ? await recordExactLifecyclePaths(env, listingId, scanRunId, incomingPaths, observedAt)
+    : 0;
 
-  if (o.is_candidate && (observationPolicy === "full" || changed)) {
+  if (o.is_candidate) {
     await env.DB.prepare(`
       INSERT INTO candidate_events(listing_id, scan_run_id, created_at, priority, reason, event_type, detector_version)
       VALUES (?,?,?,?,?,?,?)
-    `).bind(listingId, scanRunId, o.observed_at ?? nowIso(), o.collector_priority ?? 0,
-      o.detector_reason ?? "candidate", changed ? "new_or_changed" : "seen_again", o.detector_version ?? "v1").run();
+    `).bind(listingId, scanRunId, observedAt, o.collector_priority ?? 0,
+      o.detector_reason ?? "candidate", "new_or_changed", o.detector_version ?? "v1").run();
   }
 
-  return { id: listingId, changed };
+  return {
+    id: listingId, changed: true, unchangedSkipped: 0,
+    heartbeatUpdates: 0, metadataOnlyUpdates: 0, lifecycleWrites,
+  };
 }
 
 async function processDisappearance(env: Env, scanRunId: string) {
@@ -1162,12 +1350,12 @@ export default {
         ? Math.max(0, Math.floor((Date.now() - runningStartedAt) / 1000))
         : null;
       return json({
-        ok: true, version: "1.1", listing_count: db?.n ?? 0, historical_count: hist.total,
+        ok: true, version: "1.1.2", listing_count: db?.n ?? 0, historical_count: hist.total,
         historical_seed_records: hist.tracker_seed_records, last_scan: last ?? null,
         last_completed_scan: lastCompleted ?? null, running_scan: running ?? null,
         running_scan_count: Number(runningCount?.n ?? 0), running_scan_age_seconds: runningScanAgeSeconds,
         warframe_founder_count: wfDb?.n ?? 0, warframe_last_scan: wfLast ?? null, now: nowIso(),
-        capabilities: ["source_health", "field_provenance", "historical_stats", "comparables", "quality_by_version", "multi_game", "warframe_founder", "smart_scan_profiles", "sparse_snapshots", "scan_lifecycle_health"],
+        capabilities: ["source_health", "field_provenance", "historical_stats", "comparables", "quality_by_version", "multi_game", "warframe_founder", "smart_scan_profiles", "sparse_snapshots", "scan_lifecycle_health", "write_optimized_ingest"],
       });
     }
 
@@ -1506,15 +1694,42 @@ export default {
       `).bind(body.scan_id,body.started_at||nowIso(),body.finished_at||nowIso(),body.sources_attempted||0,
         body.listings_found||rows.length,body.alert_eligible||0,JSON.stringify(body.errors||[])).run();
       let stored = 0;
+      let changedCount = 0;
+      let unchangedSkipped = 0;
+      let heartbeatUpdates = 0;
       for (const r of rows) {
         if (!r.url || !r.title || !["POTENTIAL_LEAD","CLAIM_EVIDENCE"].includes(String(r.evidence_level))) continue;
         const previous = await env.DB.prepare(
-          "SELECT price_value,currency,evidence_level,evidence_score,detail_verified,alert_eligible FROM warframe_founder_listings WHERE url=?"
+          "SELECT * FROM warframe_founder_listings WHERE url=?"
         ).bind(r.url).first() as AnyRow | null;
-        const changed = !previous || (previous.price_value ?? null) !== (r.price_value ?? null) ||
-          (previous.currency ?? null) !== (r.currency ?? null) ||
-          previous.evidence_level !== r.evidence_level || Number(previous.evidence_score) !== Number(r.evidence_score || 0) ||
-          Number(previous.detail_verified) !== (r.detail_verified ? 1 : 0) || Number(previous.alert_eligible) !== (r.alert_eligible ? 1 : 0);
+        const observedAt = String(r.observed_at || nowIso());
+        const changed = !previous ||
+          nullableStringChanged(previous.platform, r.platform || "Unknown") ||
+          nullableStringChanged(previous.title, String(r.title)) ||
+          nullableStringChanged(previous.seller, r.seller ?? null) ||
+          nullableNumberChanged(previous.price_value, r.price_value ?? null) ||
+          nullableStringChanged(previous.currency, r.currency ?? null) ||
+          nullableStringChanged(previous.evidence_level, r.evidence_level) ||
+          jsonChanged(previous.founder_terms_json, r.founder_terms || []) ||
+          jsonChanged(previous.prime_items_json, r.prime_items || []) ||
+          jsonChanged(previous.evidence_snippets_json, r.evidence_snippets || []) ||
+          nullableNumberChanged(previous.evidence_score, clamp(Number(r.evidence_score || 0), 0, 100)) ||
+          Number(previous.detail_verified || 0) !== (r.detail_verified ? 1 : 0) ||
+          Number(previous.alert_eligible || 0) !== (r.alert_eligible ? 1 : 0) ||
+          nullableStringChanged(previous.budget_fit, r.budget_fit || "unknown") ||
+          nullableStringChanged(previous.safety_note, r.safety_note || "Listing claim only; authenticity not verified.");
+        if (previous && !changed) {
+          unchangedSkipped++;
+          if (body.observation_policy !== "changes_only") {
+            const heartbeat = await env.DB.prepare(`
+              UPDATE warframe_founder_listings SET last_seen=?,last_scan_id=?
+              WHERE id=? AND (last_seen IS NULL OR datetime(last_seen) <= datetime(?, ?))
+            `).bind(observedAt,body.scan_id,previous.id,observedAt,`-${LISTING_HEARTBEAT_MINUTES} minutes`).run();
+            heartbeatUpdates += Number((heartbeat as any).meta?.changes || 0);
+          }
+          stored++;
+          continue;
+        }
         await env.DB.prepare(`
           INSERT INTO warframe_founder_listings(
             platform,url,title,seller,price_value,currency,first_seen,last_seen,evidence_level,
@@ -1530,22 +1745,24 @@ export default {
             safety_note=excluded.safety_note,last_scan_id=excluded.last_scan_id
         `).bind(
           r.platform||"Unknown",String(r.url),String(r.title),r.seller??null,r.price_value??null,r.currency??null,
-          r.observed_at||nowIso(),r.observed_at||nowIso(),r.evidence_level,JSON.stringify(r.founder_terms||[]),
+          observedAt,observedAt,r.evidence_level,JSON.stringify(r.founder_terms||[]),
           JSON.stringify(r.prime_items||[]),JSON.stringify(r.evidence_snippets||[]),clamp(Number(r.evidence_score||0),0,100),
           r.detail_verified?1:0,r.alert_eligible?1:0,r.budget_fit||"unknown",
           r.safety_note||"Listing claim only; authenticity not verified.",body.scan_id
         ).run();
         const listing = await env.DB.prepare("SELECT id FROM warframe_founder_listings WHERE url=?").bind(r.url).first();
-        if (body.observation_policy !== "changes_only" || changed) {
-          await env.DB.prepare(`
-            INSERT INTO warframe_founder_events(listing_id,scan_id,observed_at,evidence_level,evidence_score,alert_eligible)
-            VALUES (?,?,?,?,?,?)
-          `).bind(listing?.id,body.scan_id,r.observed_at||nowIso(),r.evidence_level,
-            clamp(Number(r.evidence_score||0),0,100),r.alert_eligible?1:0).run();
-        }
+        await env.DB.prepare(`
+          INSERT INTO warframe_founder_events(listing_id,scan_id,observed_at,evidence_level,evidence_score,alert_eligible)
+          VALUES (?,?,?,?,?,?)
+        `).bind(listing?.id,body.scan_id,observedAt,r.evidence_level,
+          clamp(Number(r.evidence_score||0),0,100),r.alert_eligible?1:0).run();
+        changedCount++;
         stored++;
       }
-      return json({ ok: true, stored, scan_id: body.scan_id }, 201);
+      return json({
+        ok: true, stored, changed: changedCount, unchanged_skipped: unchangedSkipped,
+        heartbeat_updates: heartbeatUpdates, scan_id: body.scan_id,
+      }, 201);
     }
 
     if (request.method === "POST" && path === "/v1/scan/start") {
@@ -1571,11 +1788,8 @@ export default {
       await ensureV07Tables(env);
       const body = await readJson<{ scan_run_id: string; rows: AnyRow[] }>(request);
       for (const r of body.rows) {
-        await env.DB.prepare(`
-          INSERT INTO coverage(scan_run_id,platform,query_family,query_text,page_label,status,result_count,error,observed_at)
-          VALUES (?,?,?,?,?,?,?,?,?)
-        `).bind(body.scan_run_id,r.platform,r.query_family,r.query_text??null,r.page_label??null,
-          r.status,r.result_count??0,r.error??null,r.observed_at??nowIso()).run();
+        // coverage_paths superseded the legacy coverage table in v0.5 and is the source for every
+        // report and lifecycle query. Avoid duplicating every coverage observation into both tables.
         await env.DB.prepare(`
           INSERT INTO coverage_paths(scan_run_id,platform,query_family,query_text,page_label,path_key,status,result_count,error,observed_at)
           VALUES (?,?,?,?,?,?,?,?,?,?)
@@ -1628,11 +1842,24 @@ export default {
       const body = await readJson<{ scan_run_id: string; listings: AnyRow[]; observation_policy?: string }>(request);
       const observationPolicy: "full" | "changes_only" = body.observation_policy === "changes_only" ? "changes_only" : "full";
       let changed = 0;
+      let unchangedSkipped = 0;
+      let heartbeatUpdates = 0;
+      let metadataOnlyUpdates = 0;
+      let lifecycleWrites = 0;
       for (const observation of body.listings) {
         const res = await upsertListing(env, observation, body.scan_run_id, observationPolicy);
         if (res.changed) changed++;
+        unchangedSkipped += res.unchangedSkipped;
+        heartbeatUpdates += res.heartbeatUpdates;
+        metadataOnlyUpdates += res.metadataOnlyUpdates;
+        lifecycleWrites += res.lifecycleWrites;
       }
-      return json({ ok: true, received: body.listings.length, changed, observation_policy: observationPolicy });
+      return json({
+        ok: true, received: body.listings.length, changed,
+        unchanged_skipped: unchangedSkipped, heartbeat_updates: heartbeatUpdates,
+        metadata_only_updates: metadataOnlyUpdates, lifecycle_writes: lifecycleWrites,
+        observation_policy: observationPolicy,
+      });
     }
 
     if (request.method === "POST" && path === "/v1/scan/finish") {
