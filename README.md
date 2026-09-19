@@ -1,4 +1,4 @@
-# Dream Account Market Scanner v1.1.0
+# Dream Account Market Scanner v1.1.1
 
 Produktionssystem für Genshin-Traumaccounts und separat bewertete Warframe-Founder-Angebote.
 

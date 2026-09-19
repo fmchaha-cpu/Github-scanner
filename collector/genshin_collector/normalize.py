@@ -13,8 +13,14 @@ AR_RE = re.compile(r"\bAR\s*[-: /|]?\s*(\d{1,2})\b", re.I)
 # Keep this as a separate, narrow fallback so ordinary words containing ``ar`` are never interpreted as rank.
 AR_GENDER_RE = re.compile(r"(?:male|female|famale)\s*[/|_-]?\s*AR\s*[-: /|]?\s*(\d{1,2})\b", re.I)
 PRIMO_RE = re.compile(r"(?<!\d)(\d{3,7})\s*\+?\s*(?:primogem|primo(?:gems?)?)", re.I)
-PRIMO_K_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:[.,]\d{1,2})?)\s*[kK]\s*(?:primogem|primo(?:gems?)?)", re.I)
-IF_RE = re.compile(r"(?<!\d)(\d{1,4})\s*\+?\s*(?:intertwined|interwoven)\s*(?:fate|destiny)?", re.I)
+PRIMO_K_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:[.,]\d{1,2})?)\s*[kK]\s*\+?\s*(?:primogem|primo(?:gems?)?)", re.I)
+# Marketplace sellers commonly misspell "intertwined" as "interwined".
+# Keep the currency term mandatory so unrelated quantities are never counted as pulls.
+IF_RE = re.compile(r"(?<!\d)(\d{1,4})\s*\+?\s*(?:intertwined|interwined|interwoven)\s*(?:fate|destiny)?", re.I)
+IF_LABEL_FIRST_RE = re.compile(
+    r"(?:intertwined|interwined|interwoven)\s*(?:fate|destiny)?\s*[:：]?\s*(\d{1,4})(?:\s*-\s*(\d{1,4}))?\s*\+?",
+    re.I,
+)
 DIRECT_PULL_RE = re.compile(r"(?<!\d)(\d{2,4})\s*\+?\s*(?:limited\s*)?(?:wishes|pulls)\b", re.I)
 
 # Standard-banner 5-stars must never be promoted as "limited C6".
@@ -145,6 +151,10 @@ def parse_resources(text: str):
     m = IF_RE.search(text)
     if m:
         intertwined = int(m.group(1))
+    else:
+        m = IF_LABEL_FIRST_RE.search(text)
+        if m:
+            intertwined = max(int(value) for value in m.groups() if value is not None)
 
     pulls = None
     if primos is not None or intertwined is not None:
