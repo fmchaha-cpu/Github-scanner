@@ -36,3 +36,17 @@ def test_send_listings_caps_requested_batch_size(monkeypatch):
     rows = [ListingObservation(platform="X", url=f"https://x/{i}", title=str(i)) for i in range(41)]
     asyncio.run(api.send_listings("scan", rows, batch_size=999))
     assert sizes == [20, 20, 1]
+
+
+def test_fast_listing_batches_request_sparse_observations(monkeypatch):
+    api = MarketApi("https://example.invalid", "token")
+    policies = []
+
+    async def fake_post(path, payload):
+        policies.append(payload["observation_policy"])
+        return {"received": len(payload["listings"]), "changed": 0}
+
+    monkeypatch.setattr(api, "_post", fake_post)
+    rows = [ListingObservation(platform="X", url="https://x/1", title="one")]
+    asyncio.run(api.send_listings("scan", rows, observation_policy="changes_only"))
+    assert policies == ["changes_only"]

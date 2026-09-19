@@ -1,0 +1,12 @@
+[Unit]
+Description=Run fast market discovery every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+RandomizedDelaySec=60s
+Persistent=true
+Unit=market-scanner-fast.service
+
+[Install]
+WantedBy=timers.target

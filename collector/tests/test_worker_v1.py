@@ -3,11 +3,16 @@ from pathlib import Path
 
 def test_worker_exposes_separate_warframe_api():
     worker = (Path(__file__).parents[2] / "cloudflare" / "src" / "index.ts").read_text(encoding="utf-8")
-    assert 'version: "1.0"' in worker
+    assert 'version: "1.1"' in worker
     assert '"multi_game"' in worker
     assert '"warframe_founder"' in worker
+    assert '"smart_scan_profiles"' in worker
+    assert '"sparse_snapshots"' in worker
     assert '/v1/warframe/founder/batch' in worker
     assert '/v1/warframe/founder/alerts' in worker
+    assert 'observation_policy' in worker
+    assert 'process_disappearance === false' in worker
+    assert 'create_quality_snapshot !== false' in worker
 
 
 def test_github_scan_is_manual_fallback_only():
@@ -24,3 +29,17 @@ def test_vps_service_reuses_existing_secret_file_and_state_directory():
     assert "/var/lib/genshin-scanner" in service
     assert "env_file=/etc/genshin-scanner.env" in installer
     assert "/etc/market-scanner" not in service + installer
+
+
+def test_two_tier_vps_timers_share_one_lock_and_use_expected_profiles():
+    root = Path(__file__).parents[2]
+    full_service = (root / "deploy" / "systemd" / "market-scanner.service").read_text(encoding="utf-8")
+    fast_service = (root / "deploy" / "systemd" / "market-scanner-fast.service").read_text(encoding="utf-8")
+    full_timer = (root / "deploy" / "systemd" / "market-scanner.timer").read_text(encoding="utf-8")
+    fast_timer = (root / "deploy" / "systemd" / "market-scanner-fast.timer").read_text(encoding="utf-8")
+    assert "/var/lib/genshin-scanner/scan.lock" in full_service
+    assert "/var/lib/genshin-scanner/scan.lock" in fast_service
+    assert "--profile full" in full_service
+    assert "--profile fast" in fast_service
+    assert "OnUnitActiveSec=30min" in full_timer
+    assert "OnUnitActiveSec=10min" in fast_timer

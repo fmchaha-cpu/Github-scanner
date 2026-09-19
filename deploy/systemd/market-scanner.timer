@@ -1,5 +1,5 @@
 [Unit]
-Description=Run market scanner every 30 minutes
+Description=Run full market scanner every 30 minutes
 
 [Timer]
 OnBootSec=5min

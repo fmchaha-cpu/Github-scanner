@@ -1,8 +1,8 @@
-# Dream Account Market Scanner v1.0.0
+# Dream Account Market Scanner v1.1.0
 
 Produktionssystem für Genshin-Traumaccounts und separat bewertete Warframe-Founder-Angebote.
 
-- Contabo-VPS als Hauptscanner, ungefähr alle 30 Minuten per systemd.
+- Contabo-VPS mit schnellem Kernscan ungefähr alle 10 Minuten und vollständigem Scan ungefähr alle 30 Minuten.
 - GitHub Actions für CI und manuell startbaren Fallback – kein konkurrierender Zeitplan.
 - Discord-Alerts mit Deduplizierung und ohne erlaubte Mentions.
 - Genshin-Wunschpreis 100–200 und Warframe bis 300 sind weiche Präferenzen. Gute Treffer außerhalb werden weiter gemeldet.
@@ -89,9 +89,9 @@ Die v0.8-Funktionen (Worker/Collector Handshake, Historical Stats, passive Candi
 - **ChatGPT/Human Review** = tiefe Pruefung von Identitaet, Seller, Security, persoenlicher Relevanz und auffaelligen Kandidaten.
 - **Excel** = gebuendelter Analyse-/Ranking-Output, nicht Primaerdatenbank.
 
-## Scan-Rhythmus (v1.0)
+## Scan-Rhythmus (v1.1)
 
-Der VPS-Timer startet ungefähr alle 30 Minuten. Der GitHub-Workflow ist nur ein manueller Fallback. Blockierte Quellen werden nicht umgangen; funktionsfähige Quellen erhalten das Verification-Budget.
+Ein leichter Kernscan prüft relevante Marktseiten ungefähr alle 10 Minuten. Der vollständige Scan läuft ungefähr alle 30 Minuten und bleibt für breite Abdeckung, Verschwinden-Erkennung und Qualitäts-Snapshots zuständig. Unveränderte Fast-Scan-Beobachtungen erzeugen keine zusätzlichen Rohtext-Snapshots. Der GitHub-Workflow ist nur ein manueller Fallback. Blockierte Quellen werden nicht umgangen.
 
 ## Upgrade
 
@@ -101,7 +101,7 @@ Kurzfassung:
 
 1. ZIP-Inhalt ueber das bestehende Repository kopieren. `.git` **nicht** loeschen.
 2. Commit + Push.
-3. Migration 0006 und Worker v1.0 deployen.
+3. Migration 0006 und Worker v1.1 deployen.
 4. VPS-Service installieren, Secret-Datei ausfüllen und einen kontrollierten Testlauf starten.
 
 ## Grenzen

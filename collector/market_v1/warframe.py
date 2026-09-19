@@ -106,7 +106,7 @@ def _candidate_links(html: str, base_url: str, patterns: list[str]) -> list[tupl
     return list(found.items())
 
 
-async def scan(config_path: str) -> ScanOutcome:
+async def scan(config_path: str, profile: str = "full") -> ScanOutcome:
     with open(config_path, "r", encoding="utf-8") as handle:
         cfg = yaml.safe_load(handle) or {}
     started = utcnow_iso()
@@ -163,12 +163,16 @@ async def scan(config_path: str) -> ScanOutcome:
             for source in cfg.get("sources", []):
                 if not source.get("enabled", True):
                     continue
+                if profile == "fast" and not source.get("fast_enabled", False):
+                    continue
                 attempted += 1
                 name = str(source.get("name") or "Unknown")
                 try:
                     html, final_url = await fetch_public(client, str(source["url"]), bool(source.get("use_browser_fallback", True)))
                     links = _candidate_links(html, final_url, list(source.get("detail_patterns") or []))
                     limit = max(1, min(int(source.get("detail_limit", 6)), 12))
+                    if profile == "fast":
+                        limit = min(limit, max(1, int(cfg.get("fast_detail_limit", 3))))
                     for url, card_text in links[:limit]:
                         await asyncio.sleep(float(source.get("request_delay_seconds", 0.8)))
                         try:

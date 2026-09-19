@@ -21,5 +21,7 @@ class V1Api:
             response.raise_for_status()
             return response.json()
 
-    async def send_warframe(self, outcome) -> dict:
-        return await self.post("/v1/warframe/founder/batch", outcome.model_dump())
+    async def send_warframe(self, outcome, observation_policy: str = "full") -> dict:
+        payload = outcome.model_dump()
+        payload["observation_policy"] = observation_policy
+        return await self.post("/v1/warframe/founder/batch", payload)
