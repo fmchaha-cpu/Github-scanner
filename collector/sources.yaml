@@ -21,6 +21,17 @@ collector:
   plausibility_verify_sample_per_source: 2
   auto_import_historical_seed: true
 
+# Lightweight discovery pass used every 10 minutes. Full scans remain authoritative for
+# disappearance detection, quality snapshots and broad/rotating coverage.
+fast_profile:
+  max_pages_per_scan: 1
+  deep_verify_limit_per_source: 2
+  deep_verify_hard_cap_per_source: 3
+  calibration_verify_sample_per_source: 0
+  control_verify_sample_per_source: 0
+  merit_verify_sample_per_source: 1
+  plausibility_verify_sample_per_source: 0
+
 sources:
   - name: PlayerAuctions
     enabled: true
@@ -40,17 +51,20 @@ sources:
       # Broad index catches cheap anomalies that character/category pages can miss.
       - family: all_accounts
         label: Full Genshin account index
+        fast: true
         max_pages: 2
         url: https://www.playerauctions.com/genshin-impact-account/
 
       # Always-on high-recall anchors.
       - family: eu_all
         label: EU account index
+        fast: true
         max_pages: 2
         server_hint: EU
         url: https://www.playerauctions.com/genshin-impact-account/eu/
       - family: c6_generic
         label: C6 category
+        fast: true
         max_pages: 2
         url: https://www.playerauctions.com/genshin-impact-account/c6/
       - family: resource_rich
@@ -60,12 +74,15 @@ sources:
       # Core favorite / high-value characters every run.
       - family: favorite_character
         label: Venti category
+        fast: true
         url: https://www.playerauctions.com/genshin-impact-account/venti/
       - family: favorite_character
         label: Arlecchino category
+        fast: true
         url: https://www.playerauctions.com/genshin-impact-account/arlecchino/
       - family: favorite_character
         label: Columbina category
+        fast: true
         url: https://www.playerauctions.com/genshin-impact-account/columbina/
       - family: high_value_character
         label: Furina category
@@ -127,11 +144,13 @@ sources:
     scans:
       - family: all_accounts
         label: Genshin account marketplace
+        fast: true
         max_pages: 3
         url: https://zeusx.com/game/genshin-impact/13/accounts
 
   - name: EpicNPC
     enabled: true
+    fast_enabled: false
     use_browser_fallback: true
     circuit_breaker_enabled: true
     circuit_breaker_blocked_threshold: 1
@@ -166,11 +185,13 @@ sources:
     scans:
       - family: all_accounts
         label: Genshin marketplace recent pages
+        fast: true
         page_label: page-1
         max_pages: 3
         url: https://www.playerup.com/accounts/genshinimpactaccount/
       - family: price_low
         label: Genshin marketplace price ascending
+        fast: true
         page_label: page-1-price-asc
         max_pages: 2
         url: https://www.playerup.com/accounts/genshinimpactaccount/?direction=asc&order=price

@@ -443,12 +443,18 @@ async function recordStatusEvent(env: Env, listingId: any, oldStatus: any, newSt
   `).bind(listingId, nowIso(), oldStatus ?? null, newStatus, confidence, evidence, scanRunId).run();
 }
 
-async function upsertListing(env: Env, o: AnyRow, scanRunId: string) {
+async function upsertListing(env: Env, o: AnyRow, scanRunId: string, observationPolicy: "full" | "changes_only" = "full") {
   const existing = await env.DB.prepare(
-    "SELECT id, raw_hash, price_value, availability, seller FROM listings WHERE url = ?"
+    "SELECT id, title, raw_hash, price_value, currency, availability, seller FROM listings WHERE url = ?"
   ).bind(o.url).first();
 
-  const changed = !existing || existing.raw_hash !== o.raw_hash || existing.price_value !== o.price_value || existing.availability !== o.availability || existing.seller !== o.seller;
+  const rawChanged = !existing || existing.raw_hash !== o.raw_hash || existing.price_value !== o.price_value || existing.availability !== o.availability || existing.seller !== o.seller;
+  const materialChanged = !existing || String(existing.title || "") !== String(o.title || "") ||
+    (existing.price_value ?? null) !== (o.price_value ?? null) ||
+    (existing.currency ?? null) !== (o.currency ?? null) ||
+    (existing.availability ?? null) !== (o.availability ?? null) ||
+    (existing.seller ?? null) !== (o.seller ?? null);
+  const changed = observationPolicy === "changes_only" ? materialChanged : rawChanged;
   const firstSeen = existing ? undefined : (o.observed_at || nowIso());
   const lastChanged = changed ? (o.observed_at || nowIso()) : undefined;
 
@@ -502,11 +508,13 @@ async function upsertListing(env: Env, o: AnyRow, scanRunId: string) {
   if (!row) throw new Error("listing upsert did not return an id");
   const listingId = row.id;
 
-  await env.DB.prepare(`
-    INSERT INTO listing_snapshots(listing_id, observed_at, price_value, currency, availability, seller, raw_hash, raw_text, changed)
-    VALUES (?,?,?,?,?,?,?,?,?)
-  `).bind(listingId, o.observed_at ?? nowIso(), o.price_value ?? null, o.currency ?? null,
-    o.availability ?? null, o.seller ?? null, o.raw_hash ?? null, o.raw_text ?? null, changed ? 1 : 0).run();
+  if (observationPolicy === "full" || changed) {
+    await env.DB.prepare(`
+      INSERT INTO listing_snapshots(listing_id, observed_at, price_value, currency, availability, seller, raw_hash, raw_text, changed)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `).bind(listingId, o.observed_at ?? nowIso(), o.price_value ?? null, o.currency ?? null,
+      o.availability ?? null, o.seller ?? null, o.raw_hash ?? null, o.raw_text ?? null, changed ? 1 : 0).run();
+  }
 
   await env.DB.prepare(`
     INSERT INTO listing_quality(
@@ -554,7 +562,7 @@ async function upsertListing(env: Env, o: AnyRow, scanRunId: string) {
 
   // Keep every deep-verification attempt as an event, not only the latest state.
   // This allows us to measure candidate/calibration success rates and parser regressions over time.
-  if (o.verification_reason || o.verification_level === "detail") {
+  if ((observationPolicy === "full" || changed) && (o.verification_reason || o.verification_level === "detail")) {
     await env.DB.prepare(`
       INSERT INTO verification_events(
         scan_run_id,listing_id,platform,observed_at,verification_reason,fetch_mode,fallback_reason,http_status,
@@ -623,7 +631,7 @@ async function upsertListing(env: Env, o: AnyRow, scanRunId: string) {
     `).bind(listingId, String(pathKey), o.observed_at ?? nowIso(), o.observed_at ?? nowIso(), o.observed_at ?? nowIso()).run();
   }
 
-  if (o.is_candidate) {
+  if (o.is_candidate && (observationPolicy === "full" || changed)) {
     await env.DB.prepare(`
       INSERT INTO candidate_events(listing_id, scan_run_id, created_at, priority, reason, event_type, detector_version)
       VALUES (?,?,?,?,?,?,?)
@@ -1140,10 +1148,10 @@ export default {
       const hist = await historicalStats(env);
       const last = await env.DB.prepare("SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT 1").first();
       return json({
-        ok: true, version: "1.0", listing_count: db?.n ?? 0, historical_count: hist.total,
+        ok: true, version: "1.1", listing_count: db?.n ?? 0, historical_count: hist.total,
         historical_seed_records: hist.tracker_seed_records, last_scan: last ?? null,
         warframe_founder_count: wfDb?.n ?? 0, warframe_last_scan: wfLast ?? null, now: nowIso(),
-        capabilities: ["source_health", "field_provenance", "historical_stats", "comparables", "quality_by_version", "multi_game", "warframe_founder"],
+        capabilities: ["source_health", "field_provenance", "historical_stats", "comparables", "quality_by_version", "multi_game", "warframe_founder", "smart_scan_profiles", "sparse_snapshots"],
       });
     }
 
@@ -1484,6 +1492,13 @@ export default {
       let stored = 0;
       for (const r of rows) {
         if (!r.url || !r.title || !["POTENTIAL_LEAD","CLAIM_EVIDENCE"].includes(String(r.evidence_level))) continue;
+        const previous = await env.DB.prepare(
+          "SELECT price_value,currency,evidence_level,evidence_score,detail_verified,alert_eligible FROM warframe_founder_listings WHERE url=?"
+        ).bind(r.url).first() as AnyRow | null;
+        const changed = !previous || (previous.price_value ?? null) !== (r.price_value ?? null) ||
+          (previous.currency ?? null) !== (r.currency ?? null) ||
+          previous.evidence_level !== r.evidence_level || Number(previous.evidence_score) !== Number(r.evidence_score || 0) ||
+          Number(previous.detail_verified) !== (r.detail_verified ? 1 : 0) || Number(previous.alert_eligible) !== (r.alert_eligible ? 1 : 0);
         await env.DB.prepare(`
           INSERT INTO warframe_founder_listings(
             platform,url,title,seller,price_value,currency,first_seen,last_seen,evidence_level,
@@ -1505,11 +1520,13 @@ export default {
           r.safety_note||"Listing claim only; authenticity not verified.",body.scan_id
         ).run();
         const listing = await env.DB.prepare("SELECT id FROM warframe_founder_listings WHERE url=?").bind(r.url).first();
-        await env.DB.prepare(`
-          INSERT INTO warframe_founder_events(listing_id,scan_id,observed_at,evidence_level,evidence_score,alert_eligible)
-          VALUES (?,?,?,?,?,?)
-        `).bind(listing?.id,body.scan_id,r.observed_at||nowIso(),r.evidence_level,
-          clamp(Number(r.evidence_score||0),0,100),r.alert_eligible?1:0).run();
+        if (body.observation_policy !== "changes_only" || changed) {
+          await env.DB.prepare(`
+            INSERT INTO warframe_founder_events(listing_id,scan_id,observed_at,evidence_level,evidence_score,alert_eligible)
+            VALUES (?,?,?,?,?,?)
+          `).bind(listing?.id,body.scan_id,r.observed_at||nowIso(),r.evidence_level,
+            clamp(Number(r.evidence_score||0),0,100),r.alert_eligible?1:0).run();
+        }
         stored++;
       }
       return json({ ok: true, stored, scan_id: body.scan_id }, 201);
@@ -1581,28 +1598,34 @@ export default {
 
     if (request.method === "POST" && path === "/v1/listings/batch") {
       await ensureV07Tables(env);
-      const body = await readJson<{ scan_run_id: string; listings: AnyRow[] }>(request);
+      const body = await readJson<{ scan_run_id: string; listings: AnyRow[]; observation_policy?: string }>(request);
+      const observationPolicy: "full" | "changes_only" = body.observation_policy === "changes_only" ? "changes_only" : "full";
       let changed = 0;
       for (const observation of body.listings) {
-        const res = await upsertListing(env, observation, body.scan_run_id);
+        const res = await upsertListing(env, observation, body.scan_run_id, observationPolicy);
         if (res.changed) changed++;
       }
-      return json({ ok: true, received: body.listings.length, changed });
+      return json({ ok: true, received: body.listings.length, changed, observation_policy: observationPolicy });
     }
 
     if (request.method === "POST" && path === "/v1/scan/finish") {
       await ensureV07Tables(env);
       const body = await readJson<AnyRow>(request);
       const sourceHealthUpdate = await updateSourceHealthFromScan(env, body.id);
-      const disappearance = await processDisappearance(env, body.id);
+      const disappearance = body.process_disappearance === false
+        ? { skipped: true, reason: "fast_profile" }
+        : await processDisappearance(env, body.id);
       await env.DB.prepare(`
         UPDATE scan_runs SET finished_at=?,status=?,source_count=?,listing_count=?,candidate_count=?,error_count=?,notes=? WHERE id=?
       `).bind(body.finished_at||nowIso(),body.status||"ok",body.source_count||0,body.listing_count||0,
         body.candidate_count||0,body.error_count||0,body.notes||null,body.id).run();
-      const quality = await qualitySnapshot(env, 24);
-      await env.DB.prepare(`INSERT INTO quality_snapshots(scan_run_id,created_at,metrics_json,suggestions_json) VALUES (?,?,?,?)`)
-        .bind(body.id, nowIso(), JSON.stringify({ ...quality, disappearance, source_health_update: sourceHealthUpdate }), JSON.stringify((quality as any).suggestions || [])).run();
-      return json({ ok: true, disappearance, source_health_update: sourceHealthUpdate, quality_suggestions: (quality as any).suggestions || [] });
+      let quality: AnyRow = { suggestions: [] };
+      if (body.create_quality_snapshot !== false) {
+        quality = await qualitySnapshot(env, 24) as AnyRow;
+        await env.DB.prepare(`INSERT INTO quality_snapshots(scan_run_id,created_at,metrics_json,suggestions_json) VALUES (?,?,?,?)`)
+          .bind(body.id, nowIso(), JSON.stringify({ ...quality, disappearance, source_health_update: sourceHealthUpdate }), JSON.stringify(quality.suggestions || [])).run();
+      }
+      return json({ ok: true, disappearance, source_health_update: sourceHealthUpdate, quality_suggestions: quality.suggestions || [] });
     }
 
     if (request.method === "POST" && path === "/v1/system-event") {

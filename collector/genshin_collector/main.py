@@ -16,7 +16,7 @@ from .adapters.generic import GenericMarketplaceAdapter
 from .models import CoverageRow
 
 
-WORKER_API_VERSION = "1.0"
+WORKER_API_VERSION = "1.1"
 
 
 def _pct(num: int, den: int) -> float:
@@ -345,7 +345,29 @@ def _compact_source_health(rows: list[dict]) -> dict[str, dict]:
     return out
 
 
-async def run(config_path: str):
+def _profile_source(source: dict, profile: str, fast_cfg: dict) -> dict | None:
+    if profile == "full":
+        return source
+    scans = [
+        {**spec, "max_pages": min(int(spec.get("max_pages", 1)), int(fast_cfg.get("max_pages_per_scan", 1)))}
+        for spec in (source.get("scans") or [])
+        if spec.get("fast", False)
+    ]
+    if not source.get("fast_enabled", True) or not scans:
+        return None
+    return {
+        **source,
+        "scans": scans,
+        "deep_verify_limit": int(fast_cfg.get("deep_verify_limit_per_source", 2)),
+        "deep_verify_hard_cap": int(fast_cfg.get("deep_verify_hard_cap_per_source", 3)),
+        "calibration_verify_sample": int(fast_cfg.get("calibration_verify_sample_per_source", 0)),
+        "control_verify_sample": int(fast_cfg.get("control_verify_sample_per_source", 0)),
+        "merit_verify_sample": int(fast_cfg.get("merit_verify_sample_per_source", 1)),
+        "plausibility_verify_sample": int(fast_cfg.get("plausibility_verify_sample_per_source", 0)),
+    }
+
+
+async def run(config_path: str, profile: str = "full"):
     cfg = load_config(config_path)
     api_url = os.environ.get("MARKET_API_URL", "").strip()
     api_token = os.environ.get("MARKET_API_TOKEN", "").strip()
@@ -362,6 +384,7 @@ async def run(config_path: str):
     merit_verify_sample = int(collector_cfg.get("merit_verify_sample_per_source", 4))
     plausibility_verify_sample = int(collector_cfg.get("plausibility_verify_sample_per_source", 2))
     auto_import_historical_seed = bool(collector_cfg.get("auto_import_historical_seed", True))
+    fast_cfg = cfg.get("fast_profile", {}) or {}
 
     scan_id = str(uuid.uuid4())
     api = MarketApi(api_url, api_token)
@@ -385,7 +408,7 @@ async def run(config_path: str):
             f"Worker version mismatch: collector expects {expected_worker}, Worker reports {worker_version}. "
             "Deploy the v1.0 Worker and migration 0006 before running the collector."
         )
-    required_capabilities = {"source_health", "field_provenance", "historical_stats", "comparables", "multi_game", "warframe_founder"}
+    required_capabilities = {"source_health", "field_provenance", "historical_stats", "comparables", "multi_game", "warframe_founder", "smart_scan_profiles", "sparse_snapshots"}
     worker_capabilities = {str(x) for x in (worker_health.get("capabilities") or [])}
     missing_capabilities = sorted(required_capabilities - worker_capabilities)
     if missing_capabilities:
@@ -394,8 +417,8 @@ async def run(config_path: str):
     # v0.9 self-heals the historical seed gap. The import endpoint is idempotent, and we only
     # call it when the persistent tracker seed is missing/incomplete. A seed failure is recorded
     # as telemetry but never blocks a live-market scan.
-    historical_seed_state: dict = {"enabled": auto_import_historical_seed, "attempted": False}
-    if auto_import_historical_seed:
+    historical_seed_state: dict = {"enabled": auto_import_historical_seed and profile == "full", "attempted": False}
+    if auto_import_historical_seed and profile == "full":
         seed_path = Path(__file__).resolve().parents[2] / "historical_seed_tracker_v26.json"
         try:
             seed_payload = json.loads(seed_path.read_text(encoding="utf-8"))
@@ -417,7 +440,7 @@ async def run(config_path: str):
         except Exception as exc:
             historical_seed_state["error"] = f"{type(exc).__name__}: {exc}"
 
-    await api.start_scan(scan_id, __version__, notes="v1.0 VPS collector; identity-consensus+price-plausibility+comparable-telemetry")
+    await api.start_scan(scan_id, __version__, notes=f"v1.1 VPS collector; profile={profile}; sparse-fast-observations")
 
     source_health_error: str | None = None
     try:
@@ -448,6 +471,20 @@ async def run(config_path: str):
                     result_count=0,
                 ))
                 continue
+
+            profiled_source = _profile_source(source, profile, fast_cfg)
+            if profiled_source is None:
+                all_coverage.append(CoverageRow(
+                    platform=source.get("name", "Unknown"),
+                    query_family="fast_profile",
+                    query_text="source or routes reserved for the full scan",
+                    page_label="n/a",
+                    path_key=f"{source.get('name', 'Unknown')}|fast_profile",
+                    status="not_searched:fast_profile",
+                    result_count=0,
+                ))
+                continue
+            source = profiled_source
 
             platform_name = source.get("name", "Unknown")
             health = source_health.get(platform_name) or {}
@@ -498,10 +535,15 @@ async def run(config_path: str):
 
         await api.send_coverage(scan_id, all_coverage)
         rows = list(all_listings.values())
-        send_result = await api.send_listings(scan_id, rows)
+        send_result = await api.send_listings(
+            scan_id,
+            rows,
+            observation_policy="changes_only" if profile == "fast" else "full",
+        )
         candidates = sum(1 for r in rows if r.is_candidate)
         metrics = _quality_metrics(rows, all_coverage, all_errors)
         metrics["changed_count"] = send_result.get("changed", 0)
+        metrics["scan_profile"] = profile
         metrics["favorite_characters_configured"] = favorite_characters
 
         worker_version = str(worker_health.get("version") or "unknown")
@@ -617,6 +659,8 @@ async def run(config_path: str):
             candidates,
             len(all_errors),
             notes="; ".join(all_errors[:5]) or None,
+            process_disappearance=profile == "full",
+            create_quality_snapshot=profile == "full",
         )
         print(
             f"scan={scan_id} sources={source_count} listings={len(rows)} "
@@ -645,6 +689,8 @@ async def run(config_path: str):
                 0,
                 len(all_errors) + 1,
                 notes=str(exc),
+                process_disappearance=profile == "full",
+                create_quality_snapshot=profile == "full",
             )
         finally:
             raise
@@ -653,8 +699,9 @@ async def run(config_path: str):
 def cli():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(Path(__file__).resolve().parents[1] / "sources.yaml"))
+    parser.add_argument("--profile", choices=["full", "fast"], default="full")
     args = parser.parse_args()
-    asyncio.run(run(args.config))
+    asyncio.run(run(args.config, profile=args.profile))
 
 
 if __name__ == "__main__":

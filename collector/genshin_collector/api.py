@@ -54,7 +54,13 @@ class MarketApi:
             "rows": [r.model_dump() for r in rows],
         })
 
-    async def send_listings(self, scan_id: str, rows: list[ListingObservation], batch_size: int = 8):
+    async def send_listings(
+        self,
+        scan_id: str,
+        rows: list[ListingObservation],
+        batch_size: int = 8,
+        observation_policy: str = "full",
+    ):
         # D1 listing upserts are intentionally write-heavy. Small chunks keep each
         # Cloudflare request comfortably below client/edge timeouts and avoid
         # retrying an ambiguous partially-processed write after a ReadTimeout.
@@ -65,11 +71,12 @@ class MarketApi:
             chunk = rows[i:i+batch_size]
             res = await self._post("/v1/listings/batch", {
                 "scan_run_id": scan_id,
+                "observation_policy": observation_policy,
                 "listings": [r.model_dump() for r in chunk],
             })
             total += res.get("received", len(chunk))
             changed += res.get("changed", 0)
-        return {"ok": True, "received": total, "changed": changed}
+        return {"ok": True, "received": total, "changed": changed, "observation_policy": observation_policy}
 
     async def send_system_event(
         self,
@@ -114,6 +121,8 @@ class MarketApi:
         candidate_count: int,
         error_count: int,
         notes: str | None = None,
+        process_disappearance: bool = True,
+        create_quality_snapshot: bool = True,
     ):
         return await self._post("/v1/scan/finish", {
             "id": scan_id,
@@ -123,4 +132,6 @@ class MarketApi:
             "candidate_count": candidate_count,
             "error_count": error_count,
             "notes": notes,
+            "process_disappearance": process_disappearance,
+            "create_quality_snapshot": create_quality_snapshot,
         })

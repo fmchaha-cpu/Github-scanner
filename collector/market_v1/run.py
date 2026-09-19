@@ -44,7 +44,11 @@ async def run(args) -> int:
     operational_errors: list[str] = []
 
     if args.games in {"all", "genshin"}:
-        command = [sys.executable, "-m", "genshin_collector.main", "--config", args.genshin_config]
+        command = [
+            sys.executable, "-m", "genshin_collector.main",
+            "--config", args.genshin_config,
+            "--profile", args.profile,
+        ]
         completed = subprocess.run(command, check=False)
         if completed.returncode:
             operational_errors.append(f"Genshin collector failed with exit code {completed.returncode}")
@@ -63,8 +67,11 @@ async def run(args) -> int:
 
     if args.games in {"all", "warframe"}:
         try:
-            outcome = await scan_warframe(args.warframe_config)
-            await api.send_warframe(outcome)
+            outcome = await scan_warframe(args.warframe_config, profile=args.profile)
+            await api.send_warframe(
+                outcome,
+                observation_policy="changes_only" if args.profile == "fast" else "full",
+            )
             sent, errors = await _notify(
                 "Warframe", [row.model_dump() for row in outcome.listings],
                 os.environ.get("DISCORD_WEBHOOK_WARFRAME", os.environ.get("DISCORD_WEBHOOK_URL", "")),
@@ -78,7 +85,7 @@ async def run(args) -> int:
         except Exception as exc:
             operational_errors.append(f"Warframe scan/upload: {type(exc).__name__}: {exc}")
 
-    print(f"v1.0 complete; Discord alerts sent: {total_sent}")
+    print(f"v1.1 {args.profile} complete; Discord alerts sent: {total_sent}")
     for error in operational_errors:
         print(f"ERROR: {error}", file=sys.stderr)
     return 1 if operational_errors else 0
@@ -89,6 +96,7 @@ def main() -> None:
     parser.add_argument("--games", choices=["all", "genshin", "warframe"], default="all")
     parser.add_argument("--genshin-config", default="sources.yaml")
     parser.add_argument("--warframe-config", default="warframe_sources.yaml")
+    parser.add_argument("--profile", choices=["full", "fast"], default="full")
     args = parser.parse_args()
     raise SystemExit(asyncio.run(run(args)))
 

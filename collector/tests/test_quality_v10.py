@@ -2,7 +2,7 @@ import asyncio
 
 from genshin_collector.adapters.generic import FetchPage, GenericMarketplaceAdapter
 from genshin_collector.detector import DETECTOR_VERSION, enrich_and_score
-from genshin_collector.main import WORKER_API_VERSION, _quality_metrics
+from genshin_collector.main import WORKER_API_VERSION, _profile_source, _quality_metrics
 from genshin_collector.models import ListingObservation
 
 
@@ -19,7 +19,26 @@ def epic_adapter(**kwargs):
 
 def test_v10_detector_is_preserved_behind_v1_worker_api():
     assert DETECTOR_VERSION == "v2.7"
-    assert WORKER_API_VERSION == "1.0"
+    assert WORKER_API_VERSION == "1.1"
+
+
+def test_fast_profile_keeps_only_marked_routes_and_caps_pages():
+    source = {
+        "name": "Example",
+        "scans": [
+            {"url": "https://example.test/fast", "fast": True, "max_pages": 5},
+            {"url": "https://example.test/full", "max_pages": 4},
+        ],
+    }
+    profiled = _profile_source(source, "fast", {"max_pages_per_scan": 1})
+    assert profiled is not None
+    assert [row["url"] for row in profiled["scans"]] == ["https://example.test/fast"]
+    assert profiled["scans"][0]["max_pages"] == 1
+
+
+def test_fast_profile_can_skip_blocked_or_expensive_source():
+    source = {"name": "Example", "fast_enabled": False, "scans": [{"url": "https://example.test", "fast": True}]}
+    assert _profile_source(source, "fast", {}) is None
 
 
 def test_generic_domain_h1_does_not_destroy_rich_card_title_and_identity_can_verify_without_merit():

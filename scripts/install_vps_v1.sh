@@ -36,11 +36,13 @@ if [[ ! -f "$env_file" ]]; then
 fi
 install -o root -g root -m 0644 "$repo_dir/deploy/systemd/market-scanner.service" /etc/systemd/system/market-scanner.service
 install -o root -g root -m 0644 "$repo_dir/deploy/systemd/market-scanner.timer" /etc/systemd/system/market-scanner.timer
+install -o root -g root -m 0644 "$repo_dir/deploy/systemd/market-scanner-fast.service" /etc/systemd/system/market-scanner-fast.service
+install -o root -g root -m 0644 "$repo_dir/deploy/systemd/market-scanner-fast.timer" /etc/systemd/system/market-scanner-fast.timer
 systemctl daemon-reload
-systemctl enable market-scanner.timer
+systemctl enable market-scanner.timer market-scanner-fast.timer
 
 echo "Installiert, aber noch nicht gestartet."
 echo "1) $env_file prüfen"
 echo "2) systemctl start market-scanner.service"
 echo "3) journalctl -u market-scanner.service -n 100 --no-pager"
-echo "4) systemctl start market-scanner.timer"
+echo "4) systemctl start market-scanner.timer market-scanner-fast.timer"

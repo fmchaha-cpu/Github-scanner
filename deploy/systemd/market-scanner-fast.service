@@ -1,5 +1,5 @@
 [Unit]
-Description=Genshin and Warframe full market scanner v1.1
+Description=Genshin and Warframe fast market scanner v1.1
 After=network-online.target
 Wants=network-online.target
 
@@ -11,8 +11,8 @@ WorkingDirectory=/opt/Github-scanner/collector
 EnvironmentFile=/etc/genshin-scanner.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-ExecStart=/usr/bin/flock -w 180 /var/lib/genshin-scanner/scan.lock /opt/Github-scanner/.venv/bin/python -m market_v1.run --games all --profile full
-TimeoutStartSec=25min
+ExecStart=/usr/bin/flock -E 0 -n /var/lib/genshin-scanner/scan.lock /opt/Github-scanner/.venv/bin/python -m market_v1.run --games all --profile fast
+TimeoutStartSec=12min
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
