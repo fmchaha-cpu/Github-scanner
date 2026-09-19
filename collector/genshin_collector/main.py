@@ -406,9 +406,9 @@ async def run(config_path: str, profile: str = "full"):
     if _version_major_minor(worker_version) != expected_worker:
         raise SystemExit(
             f"Worker version mismatch: collector expects {expected_worker}, Worker reports {worker_version}. "
-            "Deploy the v1.0 Worker and migration 0006 before running the collector."
+            "Deploy the v1.1.2 Worker before running the collector."
         )
-    required_capabilities = {"source_health", "field_provenance", "historical_stats", "comparables", "multi_game", "warframe_founder", "smart_scan_profiles", "sparse_snapshots"}
+    required_capabilities = {"source_health", "field_provenance", "historical_stats", "comparables", "multi_game", "warframe_founder", "smart_scan_profiles", "sparse_snapshots", "write_optimized_ingest"}
     worker_capabilities = {str(x) for x in (worker_health.get("capabilities") or [])}
     missing_capabilities = sorted(required_capabilities - worker_capabilities)
     if missing_capabilities:
@@ -440,7 +440,7 @@ async def run(config_path: str, profile: str = "full"):
         except Exception as exc:
             historical_seed_state["error"] = f"{type(exc).__name__}: {exc}"
 
-    await api.start_scan(scan_id, __version__, notes=f"v1.1 VPS collector; profile={profile}; sparse-fast-observations")
+    await api.start_scan(scan_id, __version__, notes=f"v1.1.2 VPS collector; profile={profile}; write-optimized-ingest")
 
     source_health_error: str | None = None
     try:
@@ -543,6 +543,14 @@ async def run(config_path: str, profile: str = "full"):
         candidates = sum(1 for r in rows if r.is_candidate)
         metrics = _quality_metrics(rows, all_coverage, all_errors)
         metrics["changed_count"] = send_result.get("changed", 0)
+        metrics["write_optimization"] = {
+            "received": send_result.get("received", 0),
+            "changed": send_result.get("changed", 0),
+            "unchanged_skipped": send_result.get("unchanged_skipped", 0),
+            "heartbeat_updates": send_result.get("heartbeat_updates", 0),
+            "metadata_only_updates": send_result.get("metadata_only_updates", 0),
+            "lifecycle_writes": send_result.get("lifecycle_writes", 0),
+        }
         metrics["scan_profile"] = profile
         metrics["favorite_characters_configured"] = favorite_characters
 

@@ -3,12 +3,13 @@ from pathlib import Path
 
 def test_worker_exposes_separate_warframe_api():
     worker = (Path(__file__).parents[2] / "cloudflare" / "src" / "index.ts").read_text(encoding="utf-8")
-    assert 'version: "1.1"' in worker
+    assert 'version: "1.1.2"' in worker
     assert '"multi_game"' in worker
     assert '"warframe_founder"' in worker
     assert '"smart_scan_profiles"' in worker
     assert '"sparse_snapshots"' in worker
     assert '"scan_lifecycle_health"' in worker
+    assert '"write_optimized_ingest"' in worker
     assert 'last_completed_scan: lastCompleted' in worker
     assert 'running_scan_count: Number(runningCount?.n ?? 0)' in worker
     assert 'running_scan_age_seconds: runningScanAgeSeconds' in worker
@@ -17,6 +18,16 @@ def test_worker_exposes_separate_warframe_api():
     assert 'observation_policy' in worker
     assert 'process_disappearance === false' in worker
     assert 'create_quality_snapshot !== false' in worker
+
+
+def test_unchanged_listings_use_sparse_write_path():
+    worker = (Path(__file__).parents[2] / "cloudflare" / "src" / "index.ts").read_text(encoding="utf-8")
+    assert 'if (existing && !changed)' in worker
+    assert 'unchanged_skipped: unchangedSkipped' in worker
+    assert 'heartbeat_updates: heartbeatUpdates' in worker
+    assert 'metadata_only_updates: metadataOnlyUpdates' in worker
+    assert 'LISTING_HEARTBEAT_MINUTES = 60' in worker
+    assert 'recordExactLifecyclePaths' in worker
 
 
 def test_disappearance_requires_exact_url_coverage():

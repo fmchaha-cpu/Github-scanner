@@ -50,3 +50,35 @@ def test_fast_listing_batches_request_sparse_observations(monkeypatch):
     rows = [ListingObservation(platform="X", url="https://x/1", title="one")]
     asyncio.run(api.send_listings("scan", rows, observation_policy="changes_only"))
     assert policies == ["changes_only"]
+
+
+def test_send_listings_aggregates_write_optimization_counters(monkeypatch):
+    api = MarketApi("https://example.invalid", "token")
+    responses = iter([
+        {
+            "received": 8, "changed": 2, "unchanged_skipped": 6,
+            "heartbeat_updates": 3, "metadata_only_updates": 1, "lifecycle_writes": 2,
+        },
+        {
+            "received": 1, "changed": 0, "unchanged_skipped": 1,
+            "heartbeat_updates": 0, "metadata_only_updates": 0, "lifecycle_writes": 0,
+        },
+    ])
+
+    async def fake_post(path, payload):
+        return next(responses)
+
+    monkeypatch.setattr(api, "_post", fake_post)
+    rows = [ListingObservation(platform="X", url=f"https://x/{i}", title=str(i)) for i in range(9)]
+    result = asyncio.run(api.send_listings("scan", rows))
+
+    assert result == {
+        "ok": True,
+        "received": 9,
+        "changed": 2,
+        "unchanged_skipped": 7,
+        "heartbeat_updates": 3,
+        "metadata_only_updates": 1,
+        "lifecycle_writes": 2,
+        "observation_policy": "full",
+    }
