@@ -21,7 +21,7 @@ PRIME_PATTERNS = {
     "Lato Prime": re.compile(r"\blato\s+prime\b", re.I),
     "Skana Prime": re.compile(r"\bskana\s+prime\b", re.I),
 }
-PRICE_RE = re.compile(r"(?:(USD|EUR|GBP)\s*)?([$€£])?\s*([0-9][0-9,.]{0,9})", re.I)
+PRICE_RE = re.compile(r"(?:(USD|EUR|GBP)\s*)?([$€£])?\s*:?\s*([0-9][0-9,.]{0,9})", re.I)
 BLOCKED_MARKERS = ("captcha", "access denied", "cloudflare ray id", "verify you are human", "just a moment")
 
 

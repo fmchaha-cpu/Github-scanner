@@ -647,6 +647,7 @@ async function processDisappearance(env: Env, scanRunId: string) {
   const successful = await env.DB.prepare(`
     SELECT DISTINCT path_key FROM coverage_paths
     WHERE scan_run_id=? AND status LIKE 'ok:%'
+      AND query_family='manual_exact_url' AND page_label='exact'
   `).bind(scanRunId).all();
 
   let missUpdates = 0;
@@ -1147,11 +1148,26 @@ export default {
       const wfLast = await env.DB.prepare("SELECT * FROM warframe_founder_scans ORDER BY finished_at DESC LIMIT 1").first();
       const hist = await historicalStats(env);
       const last = await env.DB.prepare("SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT 1").first();
+      const lastCompleted = await env.DB.prepare(
+        "SELECT * FROM scan_runs WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1",
+      ).first();
+      const running = await env.DB.prepare(
+        "SELECT * FROM scan_runs WHERE status='running' ORDER BY started_at ASC LIMIT 1",
+      ).first();
+      const runningCount = await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM scan_runs WHERE status='running'",
+      ).first();
+      const runningStartedAt = running?.started_at ? Date.parse(String(running.started_at)) : Number.NaN;
+      const runningScanAgeSeconds = Number.isFinite(runningStartedAt)
+        ? Math.max(0, Math.floor((Date.now() - runningStartedAt) / 1000))
+        : null;
       return json({
         ok: true, version: "1.1", listing_count: db?.n ?? 0, historical_count: hist.total,
         historical_seed_records: hist.tracker_seed_records, last_scan: last ?? null,
+        last_completed_scan: lastCompleted ?? null, running_scan: running ?? null,
+        running_scan_count: Number(runningCount?.n ?? 0), running_scan_age_seconds: runningScanAgeSeconds,
         warframe_founder_count: wfDb?.n ?? 0, warframe_last_scan: wfLast ?? null, now: nowIso(),
-        capabilities: ["source_health", "field_provenance", "historical_stats", "comparables", "quality_by_version", "multi_game", "warframe_founder", "smart_scan_profiles", "sparse_snapshots"],
+        capabilities: ["source_health", "field_provenance", "historical_stats", "comparables", "quality_by_version", "multi_game", "warframe_founder", "smart_scan_profiles", "sparse_snapshots", "scan_lifecycle_health"],
       });
     }
 
@@ -1535,8 +1551,19 @@ export default {
     if (request.method === "POST" && path === "/v1/scan/start") {
       const body = await readJson<AnyRow>(request);
       await ensureV05Tables(env);
+      const startedAt = body.started_at || nowIso();
+      await env.DB.prepare(`
+        UPDATE scan_runs
+        SET finished_at=?, status='interrupted',
+          notes=CASE
+            WHEN notes IS NULL OR notes='' THEN 'automatically closed before a newer scan'
+            ELSE notes || '; automatically closed before a newer scan'
+          END
+        WHERE status='running' AND finished_at IS NULL
+          AND datetime(started_at) <= datetime(?, '-10 minutes')
+      `).bind(startedAt, startedAt).run();
       await env.DB.prepare(`INSERT INTO scan_runs(id,started_at,collector_version,status,notes) VALUES (?,?,?,?,?)`)
-        .bind(body.id, body.started_at || nowIso(), body.collector_version || null, "running", body.notes || null).run();
+        .bind(body.id, startedAt, body.collector_version || null, "running", body.notes || null).run();
       return json({ ok: true, id: body.id }, 201);
     }
 

@@ -66,3 +66,8 @@ def test_playerup_style_relative_founder_link_is_discovered():
 
 def test_price_ignores_plain_numbers_without_currency():
     assert _price("Warframe account level 30 with 500 hours") == (None, None)
+
+
+def test_price_accepts_playerup_currency_separator():
+    assert _price("Founder account Price $: 2000") == (2000.0, "USD")
+    assert _price("Founder account Price EUR: 450") == (450.0, "EUR")

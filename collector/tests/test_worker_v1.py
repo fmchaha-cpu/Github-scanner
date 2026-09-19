@@ -8,11 +8,28 @@ def test_worker_exposes_separate_warframe_api():
     assert '"warframe_founder"' in worker
     assert '"smart_scan_profiles"' in worker
     assert '"sparse_snapshots"' in worker
+    assert '"scan_lifecycle_health"' in worker
+    assert 'last_completed_scan: lastCompleted' in worker
+    assert 'running_scan_count: Number(runningCount?.n ?? 0)' in worker
+    assert 'running_scan_age_seconds: runningScanAgeSeconds' in worker
     assert '/v1/warframe/founder/batch' in worker
     assert '/v1/warframe/founder/alerts' in worker
     assert 'observation_policy' in worker
     assert 'process_disappearance === false' in worker
     assert 'create_quality_snapshot !== false' in worker
+
+
+def test_disappearance_requires_exact_url_coverage():
+    worker = (Path(__file__).parents[2] / "cloudflare" / "src" / "index.ts").read_text(encoding="utf-8")
+    assert "query_family='manual_exact_url'" in worker
+    assert "page_label='exact'" in worker
+
+
+def test_new_scan_closes_only_old_interrupted_runs():
+    worker = (Path(__file__).parents[2] / "cloudflare" / "src" / "index.ts").read_text(encoding="utf-8")
+    assert "status='interrupted'" in worker
+    assert "datetime(?, '-10 minutes')" in worker
+    assert "automatically closed before a newer scan" in worker
 
 
 def test_github_scan_is_manual_fallback_only():

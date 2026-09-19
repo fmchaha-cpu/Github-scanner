@@ -23,6 +23,33 @@ def test_resource_parsing_k_primos():
     assert pulls == 280
 
 
+def test_resource_parsing_common_intertwined_typo_and_ranges():
+    primos, intertwined, pulls = parse_resources(
+        "46000-48000 Primogems / 55-65 Interwined Fate"
+    )
+    assert primos == 48000
+    assert intertwined == 65
+    assert pulls == 365
+
+
+def test_resource_parsing_k_primos_with_plus_after_suffix():
+    primos, intertwined, pulls = parse_resources(
+        "AR55 56K+ Primogems | 64+ Intertwined Fate"
+    )
+    assert primos == 56000
+    assert intertwined == 64
+    assert pulls == 414
+
+
+def test_resource_parsing_label_first_intertwined_range():
+    primos, intertwined, pulls = parse_resources(
+        "56000 Primogems | Intertwined Fate：60-70 | Acquaint Fate：120"
+    )
+    assert primos == 56000
+    assert intertwined == 70
+    assert pulls == 420
+
+
 def test_ambiguous_wishes_are_not_counted_as_limited_pulls():
     primos, intertwined, pulls = parse_resources("500 wishes ready")
     assert primos is None and intertwined is None and pulls is None
