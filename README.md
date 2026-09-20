@@ -1,4 +1,4 @@
-# Dream Account Market Scanner v1.1.2
+# Dream Account Market Scanner v1.2.0
 
 Produktionssystem für Genshin-Traumaccounts und separat bewertete Warframe-Founder-Angebote.
 
@@ -8,6 +8,16 @@ Produktionssystem für Genshin-Traumaccounts und separat bewertete Warframe-Foun
 - Genshin-Wunschpreis 100–200 und Warframe bis 300 sind weiche Präferenzen. Gute Treffer außerhalb werden weiter gemeldet.
 - Warframe meldet erst dann, wenn eine Detailseite Founder plus mindestens ein exklusives Prime-Item nennt. Das ist Angebots-Evidenz, kein Echtheitsbeweis.
 - Ausschließlich öffentliche Seiten: kein Login-, CAPTCHA-, Rate-Limit- oder Anti-Bot-Bypass.
+
+## v1.2.0 – PS5-Angebotswächter
+
+- Separater VPS-Scanner für PS5 Disc und Digital in Deutschland.
+- Neuware über aktuelle Geizhals-/Idealo-Bestpreise; zertifiziert generalüberholte Geräte über PlayStation Direct.
+- Preisverlauf und Alert-Deduplizierung werden lokal in SQLite gespeichert – keine zusätzlichen D1-Schreibvorgänge.
+- Discord meldet nur gute beziehungsweise sehr gute Preise und erneut erst bei einem relevanten weiteren Preisfall.
+- Eigener 15-Minuten-Timer, dessen Wartezeit nach dem Ende des vorherigen Laufs beginnt.
+
+Einrichtung: [`docs/PS5_DEAL_WATCHER_DE.md`](docs/PS5_DEAL_WATCHER_DE.md)
 
 ## v1.1.2 – D1-Schreiboptimierung
 

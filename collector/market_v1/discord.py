@@ -8,7 +8,14 @@ from urllib.parse import urlencode
 import httpx
 
 
-COLORS = {"dream": 0xB76EFF, "strong": 0x2ECC71, "review": 0xF1C40F, "health": 0xE67E22}
+COLORS = {
+    "dream": 0xB76EFF,
+    "strong": 0x2ECC71,
+    "review": 0xF1C40F,
+    "health": 0xE67E22,
+    "excellent": 0x00C853,
+    "good": 0x2196F3,
+}
 
 
 def _safe(value: object, limit: int = 1000) -> str:
@@ -47,6 +54,39 @@ def listing_payload(game: str, tier: str, row: dict) -> dict:
             "color": COLORS.get(tier, COLORS["review"]),
             "fields": fields,
             "footer": {"text": footer},
+        }],
+    }
+
+
+def ps5_payload(tier: str, row: dict, reference_prices: dict) -> dict:
+    model = "Disc" if row.get("model") == "disc" else "Digital"
+    condition = "zertifiziert generalüberholt" if row.get("condition") == "certified_refurbished" else "neu"
+    availability = {
+        "in_stock": "auf Lager",
+        "low_stock": "wenig Bestand",
+        "price_comparison": "im Preisvergleich gelistet",
+    }.get(str(row.get("availability") or ""), "unbekannt")
+    price = float(row["price_eur"])
+    reference = ((reference_prices.get(row.get("model")) or {}).get(row.get("condition")))
+    savings = None if reference is None else max(0.0, float(reference) - price)
+    fields = [
+        {"name": "Preis", "value": _safe(f"{price:.2f} €"), "inline": True},
+        {"name": "Modell", "value": model, "inline": True},
+        {"name": "Zustand", "value": condition, "inline": True},
+        {"name": "Verfügbarkeit", "value": availability, "inline": True},
+        {"name": "Quelle", "value": _safe(row.get("source")), "inline": True},
+    ]
+    if savings is not None:
+        fields.append({"name": "Unter Referenzpreis", "value": _safe(f"{savings:.2f} €"), "inline": True})
+    return {
+        "username": "PS5-Angebotswächter",
+        "allowed_mentions": {"parse": []},
+        "embeds": [{
+            "title": _safe(f"PS5 {model}: {tier.upper()} – {row.get('title')}", 250),
+            "url": str(row.get("url") or ""),
+            "color": COLORS.get(tier, COLORS["good"]),
+            "fields": fields,
+            "footer": {"text": "Preis, Versand, Zustand und Verkäufer vor dem Kauf nochmals prüfen."},
         }],
     }
 

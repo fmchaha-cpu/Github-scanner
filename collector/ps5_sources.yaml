@@ -1,0 +1,84 @@
+# Deutsche PS5-Angebote ohne Login-, CAPTCHA- oder Anti-Bot-Umgehung.
+# Disc und Digital; nur neu oder offiziell/zertifiziert generalüberholt.
+timeout_seconds: 30
+minimum_alert_price_drop_eur: 10
+
+# Referenz: offizielle deutsche PlayStation-Direct-Preise am 20.09.2026.
+reference_prices:
+  digital:
+    new: 599.99
+    certified_refurbished: 499.99
+  disc:
+    new: 649.99
+    certified_refurbished: 549.99
+
+# Gute Preise lösen einmalig einen Alert aus; ein neuer Alert folgt erst nach
+# mindestens 10 EUR weiterem Preisfall oder beim Sprung von good zu excellent.
+thresholds:
+  digital:
+    new:
+      good: 519.99
+      excellent: 469.99
+    certified_refurbished:
+      good: 499.99
+      excellent: 449.99
+  disc:
+    new:
+      good: 569.99
+      excellent: 519.99
+    certified_refurbished:
+      good: 549.99
+      excellent: 499.99
+
+sources:
+  - name: Geizhals Digital
+    kind: idealo_product
+    model: digital
+    condition: new
+    title: Sony PlayStation 5 Slim Digital Edition 825GB
+    seller: Geizhals Preisvergleich
+    url: https://geizhals.de/sony-playstation-5-slim-digital-edition-825gb-weiss-1000049749-a3607040.html?hloc=de
+    use_browser_fallback: true
+    browser_wait_ms: 1200
+
+  - name: Geizhals Disc
+    kind: idealo_product
+    model: disc
+    condition: new
+    title: Sony PlayStation 5 Slim Disc Edition 1TB
+    seller: Geizhals Preisvergleich
+    url: https://geizhals.de/sony-playstation-5-slim-1tb-weiss-1000040586-a3039116.html?hloc=de
+    use_browser_fallback: true
+    browser_wait_ms: 1200
+
+  - name: Idealo Digital
+    kind: idealo_product
+    model: digital
+    condition: new
+    title: Sony PlayStation 5 Slim Digital Edition
+    url: https://www.idealo.de/preisvergleich/OffersOfProduct/203554857_-playstation-5-slim-ps5-slim-digital-edition-sony.html
+    use_browser_fallback: true
+    browser_wait_ms: 1600
+
+  - name: Idealo Disc
+    kind: idealo_product
+    model: disc
+    condition: new
+    title: Sony PlayStation 5 Slim Disc Edition
+    url: https://www.idealo.de/preisvergleich/OffersOfProduct/203721237_-playstation-5-slim-ps5-slim-standard-edition-sony.html
+    use_browser_fallback: true
+    browser_wait_ms: 1600
+
+  - name: PlayStation Direct
+    kind: playstation_direct
+    url: https://direct.playstation.com/de-de/hardware/ps5
+    certified_refurbished_source: true
+    use_browser_fallback: true
+    browser_wait_ms: 1800
+
+  - name: MediaMarkt
+    kind: jsonld
+    condition: new
+    url: https://www.mediamarkt.de/de/category/playstation-5-konsolen-7857.html
+    use_browser_fallback: true
+    browser_wait_ms: 1600

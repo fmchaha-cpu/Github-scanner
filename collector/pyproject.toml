@@ -1,7 +1,7 @@
 [project]
 name = "genshin-market-collector"
-version = "1.1.2"
-description = "Public marketplace collector and alerting for separated Genshin and Warframe account research"
+version = "1.2.0"
+description = "Public marketplace collectors for Genshin, Warframe and German PS5 deal alerts"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

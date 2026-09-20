@@ -1,3 +1,3 @@
-"""Multi-game orchestration and alerting for market scanner v1.1.2."""
+"""Multi-market orchestration and alerting for scanner v1.2.0."""
 
-__version__ = "1.1.2"
+__version__ = "1.2.0"
